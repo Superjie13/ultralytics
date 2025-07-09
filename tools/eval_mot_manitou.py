@@ -3,8 +3,9 @@ from ultralytics.utils.eval_mot_manitou_base import EvalManitouMOT
 
 
 if __name__ == "__main__":
-    data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou_mini.yaml" 
+    data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou_mini.yaml"
     imgsz = (1552, 1936)  # (height, width)
+
     checkpoint = '/home/shu/Documents/PROTECH/ultralytics/runs/manitou_remap/train3/weights/best.pt'
     verbose = False
     num_extra_frames = 0

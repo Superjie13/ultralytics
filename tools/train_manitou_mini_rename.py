@@ -2,12 +2,11 @@ from ultralytics import YOLOManitou_MultiCam
 from ultralytics.models import yolo_manitou
 
 project = "runs/manitou_remap_mini"
-data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou_mini.yaml"
+# data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou_mini.yaml"
+data_cfg = "/root/workspace/ultralytics/ultralytics/cfg/datasets/manitou_mini.yaml"
 epochs = 80
-batch_size_per_gpu = 2
-device = [
-    0,
-]  # list of GPU devices
+batch_size_per_gpu = 1
+device = [0, 1]  # list of GPU devices
 batch_size = batch_size_per_gpu * len(device)  # total batch size
 imgsz = (1552, 1936)  # (height, width)
 max_det = 100

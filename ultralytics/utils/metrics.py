@@ -8,7 +8,6 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 from ultralytics.utils import LOGGER, SimpleClass, TryExcept, checks, plt_settings
 
@@ -16,43 +15,6 @@ OKS_SIGMA = (
     np.array([0.26, 0.25, 0.25, 0.35, 0.35, 0.79, 0.79, 0.72, 0.72, 0.62, 0.62, 1.07, 1.07, 0.87, 0.87, 0.89, 0.89])
     / 10.0
 )
-
-
-def compute_reid_map(features, ids, thresh=0.7):
-    """
-    Args:
-        features (Tensor): shape [N, D], embeddings
-        ids (Tensor): shape [N], instance IDs
-        thresh (float): similarity threshold.
-
-    Returns:
-        dict: containing precision, recall, VP, FP, FN, VN
-    """
-    sim = F.cosine_similarity(features.unsqueeze(1), features.unsqueeze(0), dim=2)  # [N, N]
-    N = sim.size(0)
-    id_eq = ids.unsqueeze(1) == ids.unsqueeze(0)  # [N, N]
-
-    mask = ~torch.eye(N, dtype=torch.bool, device=features.device)
-
-    sim = sim[mask]
-    id_eq = id_eq[mask]
-
-    pred_pos = sim > thresh
-    pred_neg = ~pred_pos
-
-    # Vrai Positifs : même id et sim > thresh
-    VP = (pred_pos & id_eq).sum().item()
-    # Faux Positifs : ids différents mais sim > thresh
-    FP = (pred_pos & ~id_eq).sum().item()
-    # Faux Négatifs : même id mais sim < thresh
-    FN = (pred_neg & id_eq).sum().item()
-    # Vrai Négatifs : ids différents et sim < thresh
-    VN = (pred_neg & ~id_eq).sum().item()
-
-    precision = VP / (VP + FP + 1e-8)
-    recall = VP / (VP + FN + 1e-8)
-
-    return dict(precision=precision, recall=recall, VP=VP, FP=FP, FN=FN, VN=VN, thresh=thresh)
 
 
 def bbox_ioa(box1, box2, iou=False, eps=1e-7):

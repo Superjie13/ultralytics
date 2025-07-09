@@ -1,7 +1,4 @@
-# Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
-
-#path: /home/shu/Documents/PROTECH/ultralytics/datasets/manitou # dataset root dir
-path: /datasets/dataset/manitou
+path: /home/shu/Documents/PROTECH/ultralytics/datasets/manitou # dataset root dir
 img_prefix: key_frames # prefix for image files
 train: annotations_multi_view/manitou_coco_train_remap.json # training set annotations (coco format)
 val: annotations_multi_view/manitou_coco_val_remap.json # validation set annotations (coco format)
@@ -26,9 +23,9 @@ names: Pedestrians
 radar_prefix: radars
 calib_prefix: calibration # prefix to access calibration files
 radar_filter:
-  range: [0, 45, -45, 45, -1, 6] # [x_min, x_max, y_min, y_max, z_min, z_max]
-  rcs: -15
-  vel:
-
-  elevation_angle: [-1, 12] # [min, max] in degrees
-accumulation: 2 # number of frames to accumulate for radar data
+  range: [0, 45, -45, 45, -1, 6]  # [x_min, x_max, y_min, y_max, z_min, z_max]
+  rcs: -30
+  vel: 
+  
+  elevation_angle: [-1, 12]  # [min, max] in degrees
+accumulation: 5  # number of frames to accumulate for radar data

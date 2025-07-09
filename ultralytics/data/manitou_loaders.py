@@ -213,7 +213,7 @@ class LoadManitouImagesAndRadar:
             half_accum = accumulation // 2
             frame_name = os.path.basename(path).split(".")[0]
             frame_name = int(frame_name)
-            for i in range(-half_accum, half_accum + 1):
+            for i in range(-half_accum+1, half_accum + 1+1):
                 if i == 0:
                     continue
                 # if frame_name + i < 0 or frame_name + i >= self.nf:
@@ -225,6 +225,10 @@ class LoadManitouImagesAndRadar:
                     # print(f"Loading radar data from {new_path} for accumulation. (current frame: {frame_name}, accumulation: {accumulation})")
                 except FileNotFoundError:
                     continue  # Skip if the file does not exist
+                except Exception as e:
+                    LOGGER.error(f"Error loading radar data from {new_path}: {e}")
+                    print()
+                    continue
 
         return radar_pc
 

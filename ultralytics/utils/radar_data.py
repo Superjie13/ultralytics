@@ -31,10 +31,8 @@ from scipy.spatial.transform import Rotation as R
 from sklearn.cluster import DBSCAN
 
 
-def apply_clustering(radars, eps=0.5, min_samples=1):
-    """
-    Apply clustering to radar points.
-
+def apply_clustering(radars, eps=0.5, min_samples=1, return_means=True):
+    """ Apply clustering to radar points.
     Args:
         radars: (N, 19) array of radar points.
 
@@ -49,7 +47,16 @@ def apply_clustering(radars, eps=0.5, min_samples=1):
 
     points = radars[:, :3].copy()
     points[:, 2] = points[:, 2] / 5  # scale z-axis
-    labels = apply_dbscan(points, eps=eps, min_samples=min_samples, n_jobs=3, metric="l2")
+
+    # radial_vel = radars[:, 4].copy()
+    # scale radial velocity (radial_distance / radial_velocity)
+    vel_scale = max(1, np.min(radars[:, 3])) / min(1, np.max(radars[:, 4]))
+    # points[:, :2] *= vel_scale  # scale x and y coordinates
+    points = np.hstack((points, radars[:, 3:4] * vel_scale))  # add radial distance scaled by velocity
+    labels = apply_dbscan(points, eps=eps, min_samples=min_samples, n_jobs=3, metric='l2')
+    if not return_means:
+        return labels
+    
     means = []
     for label in np.unique(labels):
         if label != -1:
@@ -138,23 +145,24 @@ class ManitouRadarPC:
         self._raw_radar3 = radar3
         self._raw_radar4 = radar4
         # Calibration parameters (NOTE: the translations are in centimeters)
-        self._camera1_K = calib_params["camera1_K"]
-        self._camera2_K = calib_params["camera2_K"]
-        self._camera3_K = calib_params["camera3_K"]
-        self._camera4_K = calib_params["camera4_K"]
-        self._camera1_D = calib_params["camera1_D"]
-        self._camera2_D = calib_params["camera2_D"]
-        self._camera3_D = calib_params["camera3_D"]
-        self._camera4_D = calib_params["camera4_D"]
-        self._Tec1 = calib_params["eCamera1"]
-        self._Tec2 = calib_params["eCamera2"]
-        self._Tec3 = calib_params["eCamera3"]
-        self._Tec4 = calib_params["eCamera4"]
-        self._Ter1 = calib_params["eRadar1"]
-        self._Ter2 = calib_params["eRadar2"]
-        self._Ter3 = calib_params["eRadar3"]
-        self._Ter4 = calib_params["eRadar4"]
-
+        self._camera1_K = calib_params['camera1_K']
+        self._camera2_K = calib_params['camera2_K']
+        self._camera3_K = calib_params['camera3_K']
+        self._camera4_K = calib_params['camera4_K']
+        self._camera1_D = calib_params['camera1_D']
+        self._camera2_D = calib_params['camera2_D']
+        self._camera3_D = calib_params['camera3_D']
+        self._camera4_D = calib_params['camera4_D']
+        self._Tec1 = calib_params['eCamera1']
+        self._Tec2 = calib_params['eCamera2']
+        self._Tec3 = calib_params['eCamera3']
+        self._Tec4 = calib_params['eCamera4']
+        self._Ter1 = calib_params['eRadar1']
+        self._Ter2 = calib_params['eRadar2']
+        self._Ter3 = calib_params['eRadar3']
+        self._Ter4 = calib_params['eRadar4']
+        self.calib_params = calib_params
+        
         self._filtered_param = FilterParam(filter_cfg)
 
         self._filtered_radar1 = self._filter_radar_data(self._raw_radar1)
@@ -164,8 +172,9 @@ class ManitouRadarPC:
 
         # Convert to centimeters after filtering
         self._global_radar = self._to_global_coordinates()
-        self._global_colors = self.generate_colors_distance(self._global_radar[:, 3], 0, 30)
 
+        self._global_colors = self.generate_colors_distance(self._global_radar[:, 3], 0, 45)  
+    
     def _filter_radar_data(self, points):
         """Filter radar data based on the range (x_min, x_max, y_min, y_max, z_min, z_max) and other parameters."""
         filtered_points = points
@@ -257,8 +266,8 @@ class ManitouRadarPC:
         pix_cam = equidistance_projection(points_cam[:, :3], K, D)
 
         return pix_cam, mask
-
-    def project_to_camera(self, cam_idx):
+    
+    def project_to_camera(self, cam_idx, camera_K=None):
         assert cam_idx in [1, 2, 3, 4], "Camera index must be 1, 2, 3, or 4."
         if cam_idx == 1:
             K = self._camera1_K
@@ -277,6 +286,10 @@ class ManitouRadarPC:
             D = self._camera4_D
             Tgc = self._Tec4
 
+        if camera_K is not None:
+            assert camera_K.shape == (3, 3), "Camera intrinsic matrix must be of shape (3, 3)."
+            K = camera_K
+            
         # Project global radar points to camera image plane
         Tcg = np.linalg.inv(Tgc)  # global to camera transformation
         projected_points, mask = self._project_points(self._global_radar, Tcg, K, D)
@@ -310,11 +323,31 @@ class ManitouRadarPC:
         for p, c in zip(projected_points, colors):
             cv2.circle(img, tuple(p.astype(np.int32)), 4, [int(i) for i in c], -1)
         return img
-
-    def get_radar_bev(self, rangeX=(-30, 30), rangeY=(-30, 30)):
-        canvas_width = int((rangeY[1] - rangeY[0]) * 20)
+    
+    def get_radar_bev(self, rangeX=(-45, 45), rangeY=(-45, 45), points_map=None, canvas=None):
+        """Generate a bird's-eye view (BEV) image of the radar points.
+        Args:
+            rangeX: The range of x values (in meters) for the BEV image.
+            rangeY: The range of y values (in meters) for the BEV image.
+            points_map (dict): A mapping of point indices to their 3D locations and colors.
+                dict[int, list(tuple)]: {index: [(x, y, z, radial_distance, size, color), ...]}
+            canvas (np.ndarray): Optional canvas to draw on. If None, a new canvas will be created.
+        """
+        canvas_width = int((rangeY[1] - rangeY[0]) * 20)  
         canvas_height = int((rangeX[1] - rangeX[0]) * 20)
-        canvas = np.ones((canvas_height, canvas_width, 3), dtype=np.uint8) * 0  # Black background
+        if canvas is None:
+            canvas = np.ones((canvas_height, canvas_width, 3), dtype=np.uint8) * 0  # Black background
+            # Draw concentric circles at 5m intervals
+            for i in range(1, (rangeX[1] - rangeX[0]) // 5):
+                radius_meters = i * 5  # 5m intervals
+                radius_pixels = int(radius_meters / (rangeX[1] - rangeX[0]) * canvas_height)
+                center = (canvas_width // 2, canvas_height // 2)
+                cv2.circle(canvas, center, radius_pixels, (50, 50, 50), 1)
+                # Add distance labels
+                label_x = center[0] 
+                label_y = center[1] - radius_pixels + 50
+                cv2.putText(canvas, f"{radius_meters}m", (label_x, label_y), 
+                          cv2.FONT_HERSHEY_SIMPLEX, 1.5, (100, 100, 100), 1)
 
         X_min = rangeX[0]
         X_max = rangeX[1]
@@ -327,7 +360,26 @@ class ManitouRadarPC:
         for p, c in zip(self._global_radar, self._global_colors):
             x = canvas_width - int((p[1] - Y_min) / (Y_max - Y_min) * canvas_width)
             y = canvas_height - int((p[0] - X_min) / (X_max - X_min) * canvas_height)
-            cv2.circle(canvas, (x, y), 1, [int(i) for i in c], -1)
+
+            cv2.circle(canvas, (x, y), 1, [int(i // 1.5) for i in c], -1) 
+
+        if points_map is not None:
+            # draw circle on the canvas
+            for idx, points in points_map.items():
+                for i, p in enumerate(points):
+                    x, y, z, radial_distance, size, color = p
+                    if radial_distance <= 0.0:
+                        continue
+                    px = canvas_width - int((y - Y_min) / (Y_max - Y_min) * canvas_width)
+                    py = canvas_height - int((x - X_min) / (X_max - X_min) * canvas_height)
+                     # add idx
+                    if px-30 >= 0 and py-30 >= 0 and py+30 < canvas_height and px+30 < canvas_width:
+                        cv2.putText(canvas, str(idx), (px-25, py+25), cv2.FONT_HERSHEY_SIMPLEX, 1, [int(c//2) for c in color], 2)
+
+                    cv2.circle(canvas, (px, py), size, color, 2)
+                   
+
+                    break
 
         return canvas
 

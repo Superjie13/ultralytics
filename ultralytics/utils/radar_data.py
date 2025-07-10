@@ -417,6 +417,36 @@ class ManitouRadarPC:
         elif cam_idx == 4:
             self._camera4_K = new_K
 
+    def rasterization(self, rangeX=(-45, 45), rangeY=(-45, 45), grid_size=0.5):
+        """
+        Rasterize the radar point cloud into a grid.
+        Args:
+            rangeX: The range of x values (in meters)
+            rangeY: The range of y values (in meters)
+            grid_size: The size of each grid cell (in meters)
+        Returns:
+            (cell2indices, cell2mean): 
+                - cell2indices: dict[(ix, iy), list[int]]: 
+                    A mapping from grid cell coordinates to the indices of radar points within that cell.
+                - cell2mean: dict[(ix, iy), np.ndarray]: 
+                    A mapping from grid cell coordinates to the mean position of radar points within that cell.
+
+        """
+        self.x_min, self.x_max = rangeX
+        self.y_min, self.y_max = rangeY
+        self.grid_size = grid_size
+
+        nx = int(np.ceil((self.x_max - self.x_min) / self.grid_size))
+        ny = int(np.ceil((self.y_max - self.y_min) / self.grid_size))
+
+        _global_radar = self._global_radar.copy()
+        xy = _global_radar[:, :2]
+
+        mask = (
+            (xy[:,0] >= self.x_min) & (xy[:,0] < self.x_max) &
+            (xy[:,1] >= self.y_min) & (xy[:,1] < self.y_max)
+        )
+        xy = xy[mask]
 
 if __name__ == "__main__":
     import json

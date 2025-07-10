@@ -58,8 +58,8 @@ class KalmanFilterXYAH:
         self._update_mat = np.eye(ndim, 2 * ndim)
 
         # Motion and observation uncertainty are chosen relative to the current state estimate
-        self._std_weight_position = 1.0 / 20
-        self._std_weight_velocity = 1.0 / 160
+        self._std_weight_position = 8.0 / 20
+        self._std_weight_velocity = 8.0 / 160
 
     def initiate(self, measurement: np.ndarray):
         """
@@ -491,3 +491,160 @@ class KalmanFilterXYWH(KalmanFilterXYAH):
             >>> new_mean, new_covariance = kf.update(mean, covariance, measurement)
         """
         return super().update(mean, covariance, measurement)
+
+
+class KalmanFilterXY:
+    def __init__(self, dt=1):
+        ndim = 4
+        self.gating_threshold = 10
+
+        # state transition matrix
+        # state: [x, y, vx, vy]
+        self._motion_mat = np.eye(ndim, dtype=np.float32)
+        self._motion_mat[0, 2] = dt
+        self._motion_mat[1, 3] = dt
+        # measurement matrix
+        # measurement: [x, y]
+        self._update_mat = np.eye(ndim, dtype=np.float32)[:2]
+
+        # Motion and observation uncertainty are chosen relative to the current
+        # state estimate. These weights control the amount of uncertainty in
+        # the model. This is a bit hacky.
+        self._std_weight_position = 1. / 1
+        self._std_weight_velocity = 1. / 4
+
+    def initiate(self, measurement: np.array):
+        """Crate track from unassociated measurement
+        Params:
+            measurement (ndarray): cluster center (x, y). 
+        Return:
+            (ndarray, ndarray): Returns the mean vector (4 dimensions) and
+            covariance matrix (4x4 dimensions) of the new track.
+            Note: unobserved velocities are initialized to 0 mean.
+        """
+        mean_pos = measurement
+        mean_vel = np.zeros_like(mean_pos)
+        mean = np.r_[mean_pos, mean_vel]
+
+        # Initialize the state covariance
+        std_x = self._std_weight_position
+        std_y = self._std_weight_position
+        std_vx = self._std_weight_velocity
+        std_vy = self._std_weight_velocity
+
+        covariance = np.diag(np.square([std_x, std_y, std_vx, std_vy]))
+        return mean, covariance
+    
+    def predict(self, mean: np.array, covariance: np.array):
+        """Run Kalman filter prediction step.
+        Params:
+            mean (np.ndarray): The 4 dimensional mean vector of the object state at the previous time step.
+            covariance (np.ndarray): The 4x4 dimensional covariance matrix of the object state at the previous time step.
+        Return:
+            (ndarray, ndarray): Returns the mean vector and covariance matrix of the predicted state.
+        """
+        std_x = self._std_weight_position
+        std_y = self._std_weight_position
+        std_vx = self._std_weight_velocity
+        std_vy = self._std_weight_velocity
+
+        # Process noise
+        motion_cov = np.diag(np.square([std_x, std_y, std_vx, std_vy]))
+
+        mean = np.dot(mean, self._motion_mat.T)
+        covariance = np.linalg.multi_dot((self._motion_mat, covariance, self._motion_mat.T)) + motion_cov  # P_k = F * P_k-1 * F^T + Q
+        return mean, covariance
+    
+    def project(self, mean: np.array, covariance: np.array):
+        """Project the state distribution to measurement space.
+        Params:
+            mean (ndarray): The state's mean vector (4 dimensions).
+            covariance (ndarray): The state's covariance matrix (4x4 dimensions).
+        Return:
+            (ndarray, ndarray): Returns the projected mean and covariance matrix of the given state estimate.
+        """
+        std_x = 0.5 * self._std_weight_position
+        std_y = 0.5 * self._std_weight_position
+        # measurement noise
+        innovation_cov = np.diag(np.square([std_x, std_y]))
+
+        mean = np.dot(self._update_mat, mean)  # Z_k = H * X_k
+        covariance = np.linalg.multi_dot((self._update_mat, covariance, self._update_mat.T))  # S_k = H * P_k * H^T
+        return mean, covariance + innovation_cov
+    
+    def update(self, mean: np.array, covariance: np.array, measurement: np.array):
+        """Run Kalman filter correction step.
+        Params:
+            mean (ndarray): The predicted state's mean vector (4 dimensions).
+            covariance (ndarray): The predicted state's covariance matrix (4x4 dimensions).
+            measurement (ndarray): The 2 dimensional measurement (x, y).
+        Return:
+            (ndarray, ndarray): Returns the measurement-corrected state distribution.
+        """
+        projected_mean, projected_cov = self.project(mean, covariance)
+
+        chol_factor, lower = scipy.linalg.cho_factor(projected_cov, lower=True, check_finite=False)
+        kalman_gain = scipy.linalg.cho_solve((chol_factor, lower), np.dot(covariance, self._update_mat.T).T, check_finite=False).T
+        
+        innovation = measurement - projected_mean
+
+        new_mean = mean + np.dot(kalman_gain, innovation)
+        new_cov = covariance - np.linalg.multi_dot((kalman_gain, projected_cov, kalman_gain.T))
+        return new_mean, new_cov
+    
+    def gating_distance(self, mean: np.array, covariance: np.array, measurements: np.array):
+        """Compute gating distance between state distribution and measurements.
+        A suitable distance threshold can be obtained from `chi2inv95`.
+        Params:
+            mean (ndarray): The state's mean vector (4 dimensions).
+            covariance (ndarray): The state's covariance matrix (4x4 dimensions).
+            measurements (ndarray): The 2 dimensional measurement (x, y). 
+                shape: (n, 2). where n is the number of clusters.
+        Return:
+            (ndarray): Returns an array of length m, where the i-th element contains the squared Mahalanobis distance
+            between (mean, covariance) and `measurements[i]`.
+        """
+        mean, covariance = self.project(mean, covariance)
+        cholesk_factor = np.linalg.cholesky(covariance)
+        d = measurements - mean
+        z = scipy.linalg.solve_triangular(cholesk_factor, d.T, lower=True, check_finite=False, overwrite_b=True)
+        squared_maha = np.sum(z * z, axis=0)
+        return squared_maha
+    
+    def compute_distance(self, mean: np.array, measurements: np.array):
+        """Compute the distance between the track mean and the measurements.
+        Params:
+            mean (ndarray): The track's mean vector (4 dimensions).
+            measurements (ndarray): The 2 dimensional measurements (x, y).
+                shape: (n, 2). where n is the number of clusters.
+        Return:
+            (ndarray): Return an array of length n, where the i-th element contains the Euclidean distance
+            between the track's mean and `measurements[i]`.
+        """
+        mean = mean[:2]
+        d = measurements - mean
+        distance = np.sqrt(np.sum(d * d, axis=1))
+        return distance
+    
+    def track_object(self, track_mean, track_covariance, measurements: np.array, thr=2):
+        _mean, _covariance = self.predict(track_mean, track_covariance)
+        # cost = self.gating_distance(_mean, _covariance, measurements)
+        # cost[cost > self.gating_threshold] = np.nan
+        cost = self.compute_distance(_mean, measurements)
+        cost[cost > thr] = np.nan
+        return _mean, _covariance, cost
+
+    def futures(self, mean: np.array, covariance: np.array, n=10):
+        """Predict the future states
+        Params:
+            mean (ndarray): The state's mean vector (4 dimensions).
+            covariance (ndarray): The state's covariance matrix (4x4 dimensions).
+            n (int): number of future states
+        Return:
+            (ndarray): Returns the future states
+        """
+        states = []
+        for i in range(n):
+            mean, covariance = self.predict(mean, covariance)
+            states.append(mean)
+        return np.array(states)

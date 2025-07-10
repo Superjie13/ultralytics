@@ -23,7 +23,7 @@ def get_bag_ids_from_name(name):
 
 
 # get bag ids
-selected_bag_id = get_bag_ids_from_name("rosbag2_2025_01_22-11_48_43")
+selected_bag_id = get_bag_ids_from_name('rosbag2_2025_02_17-14_29_31')
 video_ids = manitou.get_vid_ids(bagIds=selected_bag_id)
 
 cam1_ids = []
@@ -103,5 +103,5 @@ results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.25, max_det=100, 
 #                       tracker="mvtrack.yaml",
 #                       persist=True)
 # # Save the results
-# for result in results:
+# for (result, radar) in results:
 #     result.save(font_size=0.8, line_width=2)  # save the results

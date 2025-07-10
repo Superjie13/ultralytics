@@ -5,7 +5,7 @@ project = "runs/manitou_remap"
 data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou.yaml"
 epochs = 80
 batch_size_per_gpu = 8
-device = [0, 1, 2, 3]  # list of GPU devices
+device = [0,1,2,]  # list of GPU devices
 batch_size = batch_size_per_gpu * len(device)  # total batch size
 imgsz = (1552, 1936)  # (height, width)
 

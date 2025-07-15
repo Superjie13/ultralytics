@@ -1,4 +1,4 @@
-from ultralytics.models.yolo_manitou import detect, detect_multiCam, segment
+from ultralytics.models.yolo_manitou import detect, detect_multiCam, detect_multiCam_reid, segment
 
 from .model import YOLOManitou, YOLOManitou_MultiCam
 

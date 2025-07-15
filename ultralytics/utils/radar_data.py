@@ -342,26 +342,48 @@ class ManitouRadarPC:
                 radius_meters = i * 5  # 5m intervals
                 radius_pixels = int(radius_meters / (rangeX[1] - rangeX[0]) * canvas_height)
                 center = (canvas_width // 2, canvas_height // 2)
-                cv2.circle(canvas, center, radius_pixels, (50, 50, 50), 1)
+                # cv2.circle(canvas, center, radius_pixels, (150, 150, 150), 1)
+                # Draw dashed circle
+                dash_length = 1  # Length of each dash in degrees
+                gap_length = 1   # Length of each gap in degrees
+                for angle in range(0, 360, dash_length + gap_length):
+                    cv2.ellipse(canvas, center, (radius_pixels, radius_pixels), 
+                                0, angle, angle + dash_length, (150, 150, 150), 1)
                 # Add distance labels
                 label_x = center[0] 
-                label_y = center[1] - radius_pixels + 50
+                label_y = center[1] - radius_pixels + 10
                 cv2.putText(canvas, f"{radius_meters}m", (label_x, label_y), 
-                          cv2.FONT_HERSHEY_SIMPLEX, 1.5, (100, 100, 100), 1)
+                          cv2.FONT_HERSHEY_SIMPLEX, 1.2, (180, 180, 180), 1)
 
         X_min = rangeX[0]
         X_max = rangeX[1]
         Y_min = rangeY[0]
         Y_max = rangeY[1]
-
+        
         canvas_height, canvas_width = canvas.shape[:2]
+
+        # Draw ego vehicle using Manitou image
+        ego_width = 2.5  # Width of the ego vehicle in meters
+        ego_length = 4.0  # Length of the ego vehicle in meters
+        ego_width_px = int(ego_length / (Y_max - Y_min) * canvas_width)
+        ego_length_px = int(ego_width / (X_max - X_min) * canvas_height)
+        pt1 = (canvas_width // 2 - ego_length_px // 2, canvas_height // 2 - ego_width_px // 2)
+        pt2 = (canvas_width // 2 + ego_length_px // 2, canvas_height // 2 + ego_width_px // 2)
+        manitou_img = cv2.imread('ultralytics/assets/Manitou.png')
+        if manitou_img is None:
+            # fill the rectangle with gray
+            cv2.rectangle(canvas, pt1, pt2, (128, 128, 128), -1)
+        else:
+            # Resize the Manitou image to fit the ego vehicle
+            manitou_img = cv2.resize(manitou_img, (ego_length_px, ego_width_px))
+            # Draw the Manitou image on the canvas
+            canvas[pt1[1]:pt2[1], pt1[0]:pt2[0]] = manitou_img  
 
         # Draw radar points
         for p, c in zip(self._global_radar, self._global_colors):
             x = canvas_width - int((p[1] - Y_min) / (Y_max - Y_min) * canvas_width)
             y = canvas_height - int((p[0] - X_min) / (X_max - X_min) * canvas_height)
-
-            cv2.circle(canvas, (x, y), 1, [int(i // 1.5) for i in c], -1) 
+            cv2.circle(canvas, (x, y), 2, [int(i // 1.5) for i in c], -1) 
 
         if points_map is not None:
             # draw circle on the canvas

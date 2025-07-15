@@ -1072,8 +1072,12 @@ class Ensemble(torch.nn.ModuleList):
         y = torch.cat(y, 2)  # nms ensemble, y shape(B, HW, C)
         return y, None  # inference, train output
 
-
 class DetectionModel_MultiView(DetectionModel):
+    """Detection model for multi-view inputs."""
+
+    pass
+
+class DetectionModel_MultiView_ReID(DetectionModel):
     """
     Detection model for multi-view inputs.
 
@@ -1129,6 +1133,21 @@ class DetectionModel_MultiView(DetectionModel):
                 nn.Conv2d(detect_feat_dims[2], detect_feat_dims[1], kernel_size=1),
             ]
         )
+
+    def load(self, weights, verbose=True):
+        """
+        Load weights into the model.
+
+        Args:
+            weights (dict | torch.nn.Module): The pre-trained weights to be loaded.
+            verbose (bool, optional): Whether to log the transfer progress.
+        """
+        model = weights["model"] if isinstance(weights, dict) else weights  # torchvision models are not dicts
+        csd = model.float().state_dict()  # checkpoint state_dict as FP32
+        csd = intersect_dicts(csd, self.state_dict())  # intersect
+        self.load_state_dict(csd, strict=False)  # load
+        if verbose:
+            LOGGER.info(f"Transferred {len(csd)}/{len(self.model.state_dict())} items from pretrained weights")
 
     def loss(self, batch, preds=None, features=None):
         if getattr(self, "criterion", None) is None:

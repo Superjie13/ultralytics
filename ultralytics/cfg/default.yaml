@@ -135,3 +135,4 @@ ref_img_sampler: # (dict)
 
 # Radar settings
 use_radar: False # (bool) whether to use radar data
+draw_radar: False # (bool) whether to draw radar data on images

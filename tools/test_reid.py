@@ -1,3 +1,5 @@
+from pathlib import Path
+import os
 import cv2
 import numpy as np
 import torch
@@ -16,20 +18,21 @@ def draw_results_on_image(img, boxes, confs, global_indices):
     return img
 
 
-weights = "/root/workspace/ultralytics/tools/runs/manitou_remap/train/weights/best.pt"
-device = [0]
+data_root = "/home/shu/Documents/PROTECH/ultralytics/datasets/manitou"
+weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train/weights/last.pt"
+device = [1]
 imgsz = (1552, 1936)  # (height, width)
-model = YOLOManitou_MultiCam(model="yolo11s.yaml").load(weights)
-calib_params = get_manitou_calibrations("/datasets/dataset/manitou/calibration/")
+model = YOLOManitou_MultiCam(weights)
+calib_params = get_manitou_calibrations("/home/shu/Documents/PROTECH/ultralytics/datasets/manitou/calibration/")
 
 rosbag_name = "rosbag2_2025_02_17-14_29_31"
 frame = "000076"
 
 
-cam1_paths = f"/datasets/dataset/manitou/key_frames/{rosbag_name}/camera1/{frame}.jpg"
-cam2_paths = f"/datasets/dataset/manitou/key_frames/{rosbag_name}/camera2/{frame}.jpg"
-cam3_paths = f"/datasets/dataset/manitou/key_frames/{rosbag_name}/camera3/{frame}.jpg"
-cam4_paths = f"/datasets/dataset/manitou/key_frames/{rosbag_name}/camera4/{frame}.jpg"
+cam1_paths = os.path.join(data_root, f"key_frames/{rosbag_name}/camera1/{frame}.jpg")
+cam2_paths = os.path.join(data_root, f"key_frames/{rosbag_name}/camera2/{frame}.jpg")
+cam3_paths = os.path.join(data_root, f"key_frames/{rosbag_name}/camera3/{frame}.jpg")
+cam4_paths = os.path.join(data_root, f"key_frames/{rosbag_name}/camera4/{frame}.jpg")
 
 data_cfg = {
     "camera1": [cam1_paths],
@@ -45,7 +48,7 @@ data_cfg = {
     "radar_accumulation": 1,
 }
 
-results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.50, max_det=100, save=False)
+results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.25, max_det=100, save=False)
 
 processed_images = []
 global_index = 1
@@ -55,7 +58,7 @@ all_boxes = []
 all_confs = []
 all_img_indices = []
 
-for cam_idx, res in enumerate(results[0]):
+for cam_idx, res in enumerate(results[0][0]):
     print(cam_idx)
     img = res.orig_img.copy()
     boxes = res.boxes.xyxy.cpu().numpy() if res.boxes is not None else []

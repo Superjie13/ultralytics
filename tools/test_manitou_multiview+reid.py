@@ -9,11 +9,10 @@ from ultralytics import YOLOManitou_MultiCam
 from ultralytics.data.manitou_api import ManitouAPI, get_manitou_calibrations
 
 # Dataset
-# data_root = '/home/shu/Documents/PROTECH/ultralytics/datasets/manitou'
-data_root = "/datasets/dataset/manitou/"
+data_root = "/home/shu/Documents/PROTECH/ultralytics/datasets/manitou"
 radar_dir = "radars"
 cam_dir = "key_frames"
-calib_params = get_manitou_calibrations("/datasets/dataset/manitou/calibration/")
+calib_params = get_manitou_calibrations("/home/shu/Documents/PROTECH/ultralytics/datasets/manitou/calibration/")
 
 annotations_path = os.path.join(data_root, "annotations_multi_view", "manitou_coco_val_remap.json")
 manitou = ManitouAPI(annotations_path)
@@ -115,17 +114,17 @@ data_cfg = {
 
 # project = 'runs/manitou_remap'
 # data_cfg = "/root/workspace/ultralytics/ultralytics/cfg/datasets/manitou.yaml"
-weights = "/root/workspace/ultralytics/tools/runs/manitou_remap/train/weights/best.pt"
-device = [0]
+weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train2/weights/last.pt"
+device = [1]
 imgsz = (1552, 1936)  # (height, width)
-model = YOLOManitou_MultiCam(model="yolo11s.yaml").load(weights)
-results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.50, max_det=100, save=False)
+model = YOLOManitou_MultiCam(weights)
+results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.25, max_det=100, save=False)
 
 processed_images = []
 global_index = 1
 features_list = []
 
-for cam_idx, res in enumerate(results[0]):
+for cam_idx, res in enumerate(results[0][0]):
     img = res.orig_img.copy()
     boxes = res.boxes.xyxy.cpu().numpy() if res.boxes is not None else []
     confs = res.boxes.conf.cpu().numpy() if res.boxes is not None else []

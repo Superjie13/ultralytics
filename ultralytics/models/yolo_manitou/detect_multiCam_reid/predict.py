@@ -196,8 +196,7 @@ class ManitouPredictor_MultiCam_ReID(ManitouPredictor):
         """
         resize_crop = ManitouResizeCrop_MultiImg(
             self.pre_crop_cfg["scale"],
-            self.pre_crop_cfg["target_size"],
-            self.pre_crop_cfg["original_size"],
+            self.pre_crop_cfg["crop_tlbr"],
             1.0 if self.pre_crop_cfg["is_crop"] else 0.0,
         )
         return [resize_crop]
@@ -216,39 +215,68 @@ class ManitouPredictor_MultiCam_ReID(ManitouPredictor):
         if isinstance(self.args.imgsz, int):
             self.args.imgsz = (self.args.imgsz, self.args.imgsz)
 
-        h = self.args.imgsz[0] // self.model.stride * self.model.stride
-        w = math.ceil(self.args.imgsz[1] / self.model.stride) * self.model.stride
+        # h = self.args.imgsz[0] // self.model.stride * self.model.stride
+        # w = math.ceil(self.args.imgsz[1] / self.model.stride) * self.model.stride
+        # scale = w / self.args.imgsz[1]
+        # new_h = int(self.args.imgsz[0] * scale)
+        # y1 = new_h - h
+        # x1 = 0
+        # y2 = new_h
+        # x2 = w
+        # tlbr = (y1, x1, y2, x2)
+        # self.pre_crop_cfg = {
+        #     "is_crop": False,
+        #     "scale": 1,
+        #     "crop_tlbr": tlbr,
+        #     "original_size": (self.args.imgsz[0], self.args.imgsz[1]),
+        # }
+        # if (h, w) != (self.args.imgsz[0], self.args.imgsz[1]):
+        #     self.pre_crop_cfg["is_crop"] = True
+        #     self.pre_crop_cfg["scale"] = w / self.args.imgsz[1]
+        #     self.imgsz = (h, w)
+        # else:
+        #     self.imgsz = (self.args.imgsz[0], self.args.imgsz[1])
+        
+        # Resize and crop image size    
+        crop_size = (512, 1024)
+        assert crop_size[0] % 32 == 0 and crop_size[1] % 32 == 0, "Image size must be divisible by 32."
+        tlbr = (220, 0, 220 + crop_size[0], 0 + crop_size[1])
+        # image resolution preprocessing
         self.pre_crop_cfg = {
-            "is_crop": False,
-            "scale": 1,
-            "target_size": (self.args.imgsz[0], self.args.imgsz[1]),
-            "original_size": (self.args.imgsz[0], self.args.imgsz[1]),
+            "is_crop": True,  # whether to crop images
+            "scale": crop_size[1] / self.args.imgsz[1],  # scale factor for width
+            "crop_tlbr": tlbr,  # top-left-bottom-right coordinates for cropping
+            "original_size": (self.args.imgsz[0], self.args.imgsz[1])
         }
-        if (h, w) != (self.args.imgsz[0], self.args.imgsz[1]):
-            self.pre_crop_cfg["is_crop"] = True
-            self.pre_crop_cfg["scale"] = w / self.args.imgsz[1]
-            self.pre_crop_cfg["target_size"] = (h, w)
-            self.imgsz = (h, w)
-        else:
-            self.imgsz = (self.args.imgsz[0], self.args.imgsz[1])
+        LOGGER.warning(
+            f"Image size {self.args.imgsz} will be resized and cropped to {crop_size} for prediction."
+        )
+        # Update image size for the model
+        self.imgsz = crop_size
 
         if self.use_radar:
-            if self.pre_crop_cfg[
-                "is_crop"
-            ]:  # if use the ManitouResizeCrop_MultiImg, we need to update the camera intrinsics
+            if self.pre_crop_cfg["is_crop"]:  # if use the ManitouResizeCrop_MultiImg, we need to update the camera intrinsics
                 LOGGER.info("Updating camera intrinsics for Manitou dataset with pre-crop configuration.")
                 # update camera intrinsics
-                h, w = self.pre_crop_cfg["original_size"]
-                crop_h, crop_w = self.pre_crop_cfg["target_size"]
-                new_h, _new_w = int(h * self.pre_crop_cfg["scale"]), int(w * self.pre_crop_cfg["scale"])
-                y_off = new_h - crop_h
+                # h, w = self.pre_crop_cfg["original_size"]
+                # crop_h, crop_w = self.pre_crop_cfg["target_size"]
+                # new_h, new_w = int(h *self.pre_crop_cfg["scale"]), int(w * self.pre_crop_cfg["scale"])
+                # y_off = new_h - crop_h
+                # for cam_idx in range(1, 5):
+                #     mat_K = self.calib_params[f"camera{cam_idx}_K"]
+                #     cvt_mat = np.array([
+                #                     [self.pre_crop_cfg["scale"], 0,                           0],
+                #                     [0,                          self.pre_crop_cfg["scale"],  -y_off],
+                #                     [0,                          0,                           1]
+                #                 ], dtype=mat_K.dtype)
+                #     self.calib_params[f"new_camera{cam_idx}_K"] = cvt_mat @ mat_K
+                from ultralytics.data.augmentV1 import ManitouResizeCrop
+                pre_crop = ManitouResizeCrop(
+                    self.pre_crop_cfg["scale"],
+                    self.pre_crop_cfg["crop_tlbr"],
+                    1.0 if self.pre_crop_cfg["is_crop"] else 0.0,)
                 for cam_idx in range(1, 5):
-                    mat_K = self.calib_params[f"camera{cam_idx}_K"]
-                    cvt_mat = np.array(
-                        [[self.pre_crop_cfg["scale"], 0, 0], [0, self.pre_crop_cfg["scale"], -y_off], [0, 0, 1]],
-                        dtype=mat_K.dtype,
-                    )
-                    self.calib_params[f"new_camera{cam_idx}_K"] = cvt_mat @ mat_K
+                    self.calib_params[f"new_camera{cam_idx}_K"] = pre_crop.update_camera_intrinsics(self.calib_params[f"camera{cam_idx}_K"])
 
         radar_accumulation = data_cfg.pop("radar_accumulation", 3)
         
@@ -386,7 +414,7 @@ class ManitouPredictor_MultiCam_ReID(ManitouPredictor):
         res_list = []
 
         for pred, orig_img, img_path in zip(preds, orig_imgs, paths):
-            assert orig_img.shape[:2] == self.pre_crop_cfg["original_size"], f"Original image size {orig_img.shape[:2]} does not match `original_size` in pre-crop cfg {self.pre_crop_cfg['original_size']}"
+            assert tuple(orig_img.shape[:2]) == tuple(self.pre_crop_cfg["original_size"]), f"Original image size {orig_img.shape[:2]} does not match `original_size` in pre-crop cfg {self.pre_crop_cfg['original_size']}"
             pred[:, :4] = invert_manitou_resize_crop_xyxy(pred[:, :4], self.pre_crop_cfg)
             res_list.append(ManitouResults(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6]))
     

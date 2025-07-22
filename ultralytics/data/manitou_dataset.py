@@ -42,7 +42,7 @@ class ManitouDataset(Dataset):
     Methods:
     """
 
-    def __init__(self, *args, data=None, use_segments=False, stride, imgsz, **kwargs):
+    def __init__(self, *args, data=None, use_segments=False, stride, imgsz, hyp, **kwargs):
         """
         Initialize the ManitouDataset class.
 
@@ -50,6 +50,9 @@ class ManitouDataset(Dataset):
             *args: Variable length argument list.
             data (dict): Dataset configuration dictionary.
             use_segments (bool): Indicates if segmentation masks should be used.
+            stride (int): Stride used in the model.
+            imgsz (tuple): Original image size (height, width).
+            hyp (dict): Hyperparameters from config file.
             **kwargs: Additional keyword arguments.
         """
         self.use_segments = use_segments
@@ -59,28 +62,16 @@ class ManitouDataset(Dataset):
         self.stride = stride
         self.imgsz = imgsz
         self.ori_imgsz = imgsz
-        self.pre_crop_cfg = {"is_crop": False, "scale": 1, "target_size": imgsz, "original_size": imgsz}
-        # ============================================
-        # Image size should be divisible by stride
-        # Strategically crop the image size to be divisible by stride
-        #     1. resize the width to be divisible by stride
-        #     2. crop the heigh to be divisible by stride
-        # ============================================
-        h = imgsz[0] // stride * stride
-        w = math.ceil(imgsz[1] / stride) * stride
-        if self.imgsz != (h, w):
-            self.pre_crop_cfg["is_crop"] = True
-            self.pre_crop_cfg["scale"] = w / imgsz[1]
-            self.pre_crop_cfg["target_size"] = (h, w)
-            self.imgsz = (h, w)
-            LOGGER.warning(
-                f"Image size {self.imgsz} is not divisible by stride {stride}, resizing and cropping to {(h, w)}"
-            )
+        self.pre_crop_cfg = hyp.pre_crop_cfg
+        self.imgsz = self.pre_crop_cfg["crop_size"]
+        LOGGER.warning(
+            f"Image will be preprocessed to {self.imgsz} with pre_crop_cfg: \n\t{self.pre_crop_cfg}"
+        )
 
         # In Manitou dataset, the image size is fixed, so rect is not needed.
         kwargs.pop("rect", False)
         kwargs.pop("pad", 0.0)  # for rect, not used in Manitou dataset
-        self.full_init(*args, channels=data["channels"], rect=False, pad=0.0, **kwargs)
+        self.full_init(*args, channels=data["channels"], rect=False, pad=0.0, hyp=hyp, **kwargs)
 
     def full_init(
         self,
@@ -326,8 +317,7 @@ class ManitouDataset(Dataset):
                 [
                     ManitouResizeCrop(
                         self.pre_crop_cfg["scale"],
-                        self.pre_crop_cfg["target_size"],
-                        self.pre_crop_cfg["original_size"],
+                        self.pre_crop_cfg["crop_tlbr"],
                         1.0 if self.pre_crop_cfg["is_crop"] else 0.0,
                     ),
                     #   LetterBox(new_shape=self.imgsz, scaleup=False)  # no need to use LetterBox

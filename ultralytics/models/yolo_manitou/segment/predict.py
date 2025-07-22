@@ -99,7 +99,7 @@ class ManitouSegmentationPredictor(yolo_manitou.detect.ManitouPredictor):
         Returns:
             (Results): Result object containing the original image, image path, class names, bounding boxes, and masks.
         """
-        assert orig_img.shape[:2] == self.pre_crop_cfg["original_size"], (
+        assert tuple(orig_img.shape[:2]) == tuple(self.pre_crop_cfg["original_size"]), (
             f"Original image size {orig_img.shape[:2]} does not match pre-crop cfg {self.pre_crop_cfg['original_size']}"
         )
 

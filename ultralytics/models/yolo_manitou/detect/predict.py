@@ -158,8 +158,7 @@ class ManitouPredictor(DetectionPredictor):
         """
         resize_crop = ManitouResizeCrop(
             self.pre_crop_cfg["scale"],
-            self.pre_crop_cfg["target_size"],
-            self.pre_crop_cfg["original_size"],
+            self.pre_crop_cfg["crop_tlbr"],
             1.0 if self.pre_crop_cfg["is_crop"] else 0.0,
         )
 
@@ -189,21 +188,11 @@ class ManitouPredictor(DetectionPredictor):
         if isinstance(self.args.imgsz, int):
             self.args.imgsz = (self.args.imgsz, self.args.imgsz)
 
-        h = self.args.imgsz[0] // self.model.stride * self.model.stride
-        w = math.ceil(self.args.imgsz[1] / self.model.stride) * self.model.stride
-        self.pre_crop_cfg = {
-            "is_crop": False,
-            "scale": 1,
-            "target_size": (self.args.imgsz[0], self.args.imgsz[1]),
-            "original_size": (self.args.imgsz[0], self.args.imgsz[1]),
-        }
-        if (h, w) != (self.args.imgsz[0], self.args.imgsz[1]):
-            self.pre_crop_cfg["is_crop"] = True
-            self.pre_crop_cfg["scale"] = w / self.args.imgsz[1]
-            self.pre_crop_cfg["target_size"] = (h, w)
-            self.imgsz = (h, w)
-        else:
-            self.imgsz = (self.args.imgsz[0], self.args.imgsz[1])
+        self.pre_crop_cfg = self.args.pre_crop_cfg
+        self.imgsz = self.pre_crop_cfg["crop_size"]
+        LOGGER.warning(
+            f"Image will be preprocessed to {self.imgsz} with pre_crop_cfg: \n\t{self.pre_crop_cfg}"
+        )
 
         self.dataset = load_inference_source(
             source=source,
@@ -285,7 +274,7 @@ class ManitouPredictor(DetectionPredictor):
         res_list = []
 
         for pred, orig_img, img_path in zip(preds, orig_imgs, self.batch[0]):
-            assert orig_img.shape[:2] == self.pre_crop_cfg["original_size"], (
+            assert tuple(orig_img.shape[:2]) == tuple(self.pre_crop_cfg["original_size"]), (
                 f"Original image size {orig_img.shape[:2]} does not match pre-crop cfg {self.pre_crop_cfg['original_size']}"
             )
             pred[:, :4] = invert_manitou_resize_crop_xyxy(pred[:, :4], self.pre_crop_cfg)

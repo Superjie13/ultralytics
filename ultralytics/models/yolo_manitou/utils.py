@@ -1,3 +1,4 @@
+import torch
 import torch.nn.functional as F
 
 from ultralytics.utils import ops
@@ -12,19 +13,44 @@ def invert_manitou_resize_crop_xyxy(bboxes, pre_crop_cfg):
         pre_crop_cfg (dict): Configuration dictionary containing pre-crop settings.
             - is_crop (bool): Whether cropping was applied.
             - scale (float): Scaling factor used during cropping.
-            - target_size (tuple): Target size after resizing and cropping.
+            - crop_tlbr (tuple): Top-left-bottom-right coordinates for cropping.
             - original_size (tuple): Original size before resizing and cropping.
     """
     if pre_crop_cfg["is_crop"]:
         scale = pre_crop_cfg["scale"]
-        target_size = pre_crop_cfg["target_size"]
-        y_offset = pre_crop_cfg["original_size"][0] * scale - target_size[0]
+        y1, x1, y2, x2 = pre_crop_cfg["crop_tlbr"]
 
-        bboxes[:, [1, 3]] += y_offset
-        bboxes[:, :4] = bboxes[:, :4] / scale
+        # Clone to avoid in-place modification
+        boxes = bboxes.clone()
+        # Shift from crop-local to scaled-image coords
+        boxes[:, [0, 2]] += x1
+        boxes[:, [1, 3]] += y1
+        # Rescale back to original image coords
+        boxes /= scale
 
-    return bboxes
+    return boxes
 
+def invert_manitou_resize_crop_masks(masks, pre_crop_cfg):
+    """
+    Invert the resize and crop operation applied to masks during preprocessing.
+
+    Args:
+        masks (torch.Tensor): (N, H, W).
+    """
+    if pre_crop_cfg["is_crop"]:
+        scale = pre_crop_cfg["scale"]
+        crop_size = pre_crop_cfg["crop_size"]
+        original_size = pre_crop_cfg["original_size"]
+        y1, x1, y2, x2 = pre_crop_cfg["crop_tlbr"]
+
+        scaled_h = int(original_size[0] * scale)
+        scaled_w = int(original_size[1] * scale)
+
+        masks_scaled = torch.zeros((masks.shape[0], scaled_h, scaled_w), dtype=masks.dtype, device=masks.device)
+        masks_scaled[:, y1:y2, x1:x2] = masks
+        masks = F.interpolate(masks_scaled.unsqueeze(0), size=original_size, mode="nearest")[0]
+    
+    return masks
 
 def process_mask(protos, masks_in, bboxes, shape, pre_crop_cfg, upsample=False):
     """
@@ -60,7 +86,7 @@ def process_mask(protos, masks_in, bboxes, shape, pre_crop_cfg, upsample=False):
 
     masks = ops.crop_mask(masks, downsampled_bboxes)  # CHW
     if upsample:
-        masks = F.interpolate(masks[None], shape, mode="bilinear", align_corners=False)[0]  # CHW
+        masks = F.interpolate(masks[None], shape, mode="nearest", align_corners=False)[0]  # CHW
     masks = invert_manitou_resize_crop_masks(masks, pre_crop_cfg)
     return masks.gt_(0.0)
 
@@ -88,23 +114,3 @@ def process_mask_native(protos, masks_in, bboxes, pre_crop_cfg):
     masks = ops.crop_mask(masks, bboxes)  # CHW
     return masks.gt_(0.0)
 
-
-def invert_manitou_resize_crop_masks(masks, pre_crop_cfg):
-    """
-    Invert the resize and crop operation applied to masks during preprocessing.
-
-    Args:
-        masks (torch.Tensor): (N, H, W).
-    """
-    if pre_crop_cfg["is_crop"]:
-        scale = pre_crop_cfg["scale"]
-        target_size = pre_crop_cfg["target_size"]
-        original_size = pre_crop_cfg["original_size"]
-        y_offset = original_size[0] * scale - target_size[0]
-
-        # padding y_offset '0' to the top of the mask
-        masks = F.pad(masks, (0, 0, int(y_offset), 0), mode="constant", value=0)
-        # resize to original size
-        masks = F.interpolate(masks.unsqueeze(0), size=original_size, mode="bilinear", align_corners=False)[0]
-
-    return masks

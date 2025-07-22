@@ -133,6 +133,20 @@ ref_img_sampler: # (dict)
   num_ref_imgs: 1 # (int) number of reference images to sample
   method: "uniform" # (str) sampling method
 
+# Image preprocessing settings
+ # ============================================
+  # Image size should be divisible by stride
+  # Strategically crop the image size to be divisible by stride
+  #     1. resize the width to be divisible by stride
+  #     2. crop the image based on the provided tlbr (top-left-bottom-right) coordinates
+  # ============================================
+pre_crop_cfg: # (dict)
+  is_crop: False # (bool) whether to resize and crop the image
+  scale: 1.0 # (float) scale factor for resizing the image
+  crop_tlbr: [0, 0, 0, 0] # (list) top-left-bottom-right coordinates for cropping
+  crop_size: [1552, 1936] # (list) crop to size
+  original_size: [1552, 1936] # (list) original image size [height, width] for cropping
+
 # Radar settings
 use_radar: False # (bool) whether to use radar data
 draw_radar: False # (bool) whether to draw radar data on images

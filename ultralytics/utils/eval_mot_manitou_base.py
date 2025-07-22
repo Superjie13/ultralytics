@@ -341,7 +341,7 @@ class EvalManitouMOT:
     TRACKER = 'user-tracker'
     allowed_benchmarks = ['MOT15', 'MOT16', 'MOT17', 'MOT20', 'DanceTrack']
     
-    def __init__(self, data_cfg, tracker_cfg, model, imgsz, conf_thr, max_det, keep_bag_names=[], device=None, format_only=False, verbose=False, num_extra_frames=0):
+    def __init__(self, data_cfg, tracker_cfg, model, imgsz, conf_thr, max_det, pre_crop_cfg, keep_bag_names=[], device=None, format_only=False, verbose=False, num_extra_frames=0):
         """Initialize the evaluation class.
         
         Args:
@@ -351,6 +351,12 @@ class EvalManitouMOT:
             imgsz (tuple): Image size of the dataset
             conf_thr (float): Confidence threshold for the tracker.
             max_det (int): Maximum number of detections per image.
+            pre_crop_cfg (dict): Pre-crop configuration dictionary containing:
+                - is_crop (bool): Whether to crop the images.
+                - scale (float): Scale factor for cropping.
+                - crop_tlbr (tuple): Tuple of (top, left, bottom, right) coordinates for cropping.
+                - crop_size (list): Size of the cropped images as [height, width].
+                - original_size (list): Original size of the images as [height, width
             keep_bag_names (list[str]): List of bag names to keep for evaluation. If empty, all bags will be used.
             device (str): Device to use for inference. 
             format_only (bool): Whether to only format the data without evaluation.
@@ -367,6 +373,7 @@ class EvalManitouMOT:
             "imgsz": imgsz,
             "conf": conf_thr,
             "max_det": max_det,
+            "pre_crop_cfg": pre_crop_cfg,
             "tracker": tracker_cfg,
             "device": device,
             "persist": True,
@@ -858,12 +865,13 @@ class EvalManitouMOT:
 
 class EvalManitouMOTMV(EvalManitouMOT):
     """Evaluation class for Manitou MOT Multi-View dataset."""
-    def __init__(self, data_cfg, tracker_cfg, model, imgsz, conf_thr, max_det, keep_bag_names=[], device=None, format_only=False, verbose=False, num_extra_frames=0):
-        super().__init__(data_cfg, tracker_cfg, model, imgsz, conf_thr, max_det, keep_bag_names, device, format_only, verbose, num_extra_frames)
+    def __init__(self, data_cfg, tracker_cfg, model, imgsz, conf_thr, max_det, pre_crop_cfg, keep_bag_names=[], device=None, format_only=False, verbose=False, num_extra_frames=0):
+        super().__init__(data_cfg, tracker_cfg, model, imgsz, conf_thr, max_det, pre_crop_cfg, keep_bag_names, device, format_only, verbose, num_extra_frames)
         self.track_args = {
             "imgsz": imgsz,
             "conf": conf_thr,
             "max_det": max_det,
+            "pre_crop_cfg": pre_crop_cfg,
             "tracker": tracker_cfg,
             "device": device,
             "persist": False,

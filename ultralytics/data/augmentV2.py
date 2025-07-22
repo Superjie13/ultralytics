@@ -11,8 +11,8 @@ from .augmentV1 import *
 class ManitouResizeCrop_MultiImg(ManitouResizeCrop):
     """Applies resize and crop to multiple images."""
 
-    def __init__(self, scale, target_size, original_size, p):
-        super().__init__(scale, target_size, original_size, p)
+    def __init__(self, scale, tlbr, p):
+        super().__init__(scale, tlbr, p)
 
     def __call__(self, labels=None, images=None):
         """

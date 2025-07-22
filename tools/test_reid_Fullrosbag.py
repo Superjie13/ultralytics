@@ -22,6 +22,40 @@ def draw_results_on_image(img, boxes, confs, global_indices):
 weights = "/root/workspace/ultralytics/tools/runs/manitou_remap/train/weights/best.pt"
 device = [0]
 imgsz = (1552, 1936)
+
+# Get pre_crop_cfg
+pre_crop_cfg = {
+    "is_crop": False,  
+    "scale": 1.0,
+    "crop_tlbr": (0, 0, 0, 0),
+    "crop_size": [imgsz[0], imgsz[1]],
+    "original_size": [imgsz[0], imgsz[1]],
+}
+
+# h = imgsz[0] // 32 * 32
+# w = math.ceil(imgsz[1] / 32) * 32
+# scale = w / imgsz[1]
+# new_h = int(imgsz[0] * scale)
+# y1 = new_h - h
+# x1 = 0
+# y2 = new_h
+# x2 = w
+# tlbr = (y1, x1, y2, x2)
+
+# if imgsz != (h, w):
+#     pre_crop_cfg["is_crop"] = True
+#     pre_crop_cfg["scale"] = w / imgsz[1]
+#     pre_crop_cfg["crop_tlbr"] = tlbr
+#     pre_crop_cfg["crop_size"] = [h, w]
+
+crop_size = (512, 1024)
+assert crop_size[0] % 32 == 0 and crop_size[1] % 32 == 0, "Image size must be divisible by 32 for training and validation."
+tlbr = (220, 0, 220 + crop_size[0], 0 + crop_size[1])
+pre_crop_cfg["is_crop"] = True
+pre_crop_cfg["scale"] = crop_size[1] / imgsz[1]
+pre_crop_cfg["crop_tlbr"] = tlbr
+pre_crop_cfg["crop_size"] = crop_size
+
 rosbag_name = "rosbag2_2025_02_17-14_29_31"
 calib_path = "/datasets/dataset/manitou/calibration/"
 root_dir = f"/datasets/dataset/manitou/key_frames/{rosbag_name}"
@@ -61,7 +95,7 @@ for frame_file in frame_files:
         "radar_accumulation": 1,
     }
 
-    results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.50, max_det=100, save=False)
+    results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.50, max_det=100, pre_crop_cfg=pre_crop_cfg, save=False)
 
     processed_images = []
     global_index = 1

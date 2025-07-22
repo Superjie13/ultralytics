@@ -534,7 +534,7 @@ if __name__ == "__main__":
     import os
 
     # Example usage
-    data_root = "/home/shu/Documents/PROTECH/ultralytics/datasets/manitou"
+    data_root = "/datasets/PROTECH/dataset/manitou"
     radar_dir = "radars"
     cam_dir = "key_frames"
 

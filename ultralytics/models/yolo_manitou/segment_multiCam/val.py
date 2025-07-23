@@ -5,14 +5,14 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ultralytics.models.yolo_manitou.detect_multiCam import ManitouValidator_MultiCam
+from ultralytics.models.yolo_manitou.detect_multiCam_reid import ManitouValidator_MultiCam_ReID
 from ultralytics.utils import LOGGER, NUM_THREADS, ops
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.metrics import SegmentMetrics, box_iou, mask_iou, compute_reid_map, compute_ap
 from ultralytics.utils.plotting import output_to_target, plot_images
 from ultralytics.utils.ops import crop_mask
 
-class ManitouSegmentationValidator_MultiCam(ManitouValidator_MultiCam):
+class ManitouSegmentationValidator_MultiCam(ManitouValidator_MultiCam_ReID):
     """
     A class extending the DetectionValidator class for validation based on a segmentation model.
     """

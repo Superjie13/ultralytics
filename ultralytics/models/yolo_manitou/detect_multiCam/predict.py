@@ -6,7 +6,7 @@ from pathlib import Path
 
 from ultralytics.models.yolo_manitou.detect import ManitouPredictor
 from ultralytics.engine.predictor import STREAM_WARNING
-from ultralytics.engine.results import Results
+from ultralytics.engine.manitou_results import ManitouResults
 from ultralytics.utils import LOGGER, DEFAULT_CFG, ops, colorstr
 from ultralytics.data.manitou_loaders import LoadManitouImagesAndRadar
 from ultralytics.utils.torch_utils import smart_inference_mode
@@ -21,7 +21,8 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
     """
     def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         super().__init__(cfg, overrides, _callbacks)
-        self.use_radar = self.args.use_radar            
+        self.use_radar = self.args.use_radar
+        self.draw_radar = self.use_radar and self.args.draw_radar      
 
     def __call__(self, data_cfg=None, model=None, *args, **kwargs):
         return list(self.stream_inference(data_cfg, model, *args, **kwargs))  # merge list of Result into one
@@ -39,8 +40,8 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
             **kwargs (Any): Additional keyword arguments for the inference method.
 
         Yields:
-            (ultralytics.engine.results.Results): Results objects.
-        """  
+            (ultralytics.engine.results.ManitouResults): ManitouResults objects.
+        """
         if self.args.verbose:
             LOGGER.info("")
 
@@ -68,29 +69,33 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
                 ops.Profile(device=self.device),
                 ops.Profile(device=self.device),
                 ops.Profile(device=self.device),
+                ops.Profile(device=self.device),
             )
             self.run_callbacks("on_predict_start")
             for self.batch in self.dataset:
                 self.run_callbacks("on_predict_batch_start")
                 paths, _batch, s = self.batch
+
                 # Preprocess
                 with profilers[0]:
                     im = self.preprocess(_batch)
 
                 # Inference
                 with profilers[1]:
-                    preds, features = self.inference(im, *args, **kwargs)
+                    preds = self.inference(im, *args, **kwargs)
                     if self.args.embed:
                         yield from [preds] if isinstance(preds, torch.Tensor) else preds  # yield embedding tensors
                         continue
+
                 # Postprocess
                 with profilers[2]:
-                    #self.results = self.postprocess(preds, _batch)
-                    self.results = self.postprocess_forReid(preds, features, _batch)
-                self.run_callbacks("on_predict_postprocess_end")
+                    self.results = self.postprocess(preds, _batch)
+                
+                with profilers[3]:
+                    self.run_callbacks("on_predict_postprocess_end")
 
                 # Visualize, save, write results
-                self.results = self.results["cameras"]  # get results for each camera
+                self.results, self.radars = self.results["cameras"], self.results["radars"]  # get results for each camera
                 n = len(_batch)
                 for i in range(n):
                     self.seen += 1
@@ -99,6 +104,7 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
                             "preprocess": profilers[0].dt * 1e3 / n,
                             "inference": profilers[1].dt * 1e3 / n,
                             "postprocess": profilers[2].dt * 1e3 / n,
+                            "callbacks": profilers[3].dt * 1e3 / n,
                         }
                     if self.args.verbose or self.args.save or self.args.save_txt or self.args.show:
                         s[i] += self.write_results(i, paths, _batch, s)
@@ -108,19 +114,19 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
                     LOGGER.info("\n".join(s))
 
                 self.run_callbacks("on_predict_batch_end")
-                yield self.results
+                yield (self.results, self.radars)
 
         # Print final results
         if self.args.verbose and self.seen:
             t = tuple(x.t / self.seen * 1e3 for x in profilers)  # speeds per image
             LOGGER.info(
-                f"Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess per image at shape "
+                f"Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess, %.1fms callbacks per image at shape "
                 f"{(min(self.args.batch, self.seen), getattr(self.model, 'ch', 3), *im.shape[2:])}" % t
             )
         if self.args.save or self.args.save_txt or self.args.save_crop:
             nl = len(list(self.save_dir.glob("labels/*.txt")))  # number of labels
             s = f"\n{nl} label{'s' * (nl > 1)} saved to {self.save_dir / 'labels'}" if self.args.save_txt else ""
-            LOGGER.info(f"Results saved to {colorstr('bold', self.save_dir)}{s}")
+            LOGGER.info(f"ManitouResults saved to {colorstr('bold', self.save_dir)}{s}")
         self.run_callbacks("on_predict_end")
     
     def preprocess(self, batch):
@@ -163,7 +169,7 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         #                                 self.pre_crop_cfg["target_size"],
         #                                 self.pre_crop_cfg["original_size"],
         #                                 1.0 if self.pre_crop_cfg["is_crop"] else 0.0)
-        
+
         # same_shapes = len({x.shape for x in im}) == 1
         # letterbox = LetterBox(
         #     self.imgsz,
@@ -172,24 +178,25 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         #     and (self.model.pt or (getattr(self.model, "dynamic", False) and not self.model.imx)),
         #     stride=self.model.stride,
         # )
-        
+
         # for transform in [resize_crop]:
         #     im = [transform(image=x) for x in im]
-            
+
         return im
-    
+
     def get_pre_transform(self):
         """
         Get the pre-transforms used for the input images.
         Returns:
             (List): A list of pre-transform objects.
         """
-        resize_crop = ManitouResizeCrop_MultiImg(self.pre_crop_cfg["scale"],
-                                                 self.pre_crop_cfg["target_size"],
-                                                 self.pre_crop_cfg["original_size"],
-                                                 1.0 if self.pre_crop_cfg["is_crop"] else 0.0)
-        return [resize_crop]  
-    
+        resize_crop = ManitouResizeCrop_MultiImg(
+            self.pre_crop_cfg["scale"],
+            self.pre_crop_cfg["crop_tlbr"],
+            1.0 if self.pre_crop_cfg["is_crop"] else 0.0,
+        )
+        return [resize_crop]
+
     def setup_source(self, data_cfg):
         """
         Set up source and inference mode.
@@ -199,41 +206,73 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
                 Source for inference.
         """
         self.calib_params = data_cfg["calib_params"]
-        
+
         # Check image size
         if isinstance(self.args.imgsz, int):
             self.args.imgsz = (self.args.imgsz, self.args.imgsz)
+
+        # h = self.args.imgsz[0] // self.model.stride * self.model.stride
+        # w = math.ceil(self.args.imgsz[1] / self.model.stride) * self.model.stride
+        # scale = w / self.args.imgsz[1]
+        # new_h = int(self.args.imgsz[0] * scale)
+        # y1 = new_h - h
+        # x1 = 0
+        # y2 = new_h
+        # x2 = w
+        # tlbr = (y1, x1, y2, x2)
+        # self.pre_crop_cfg = {
+        #     "is_crop": False,
+        #     "scale": 1,
+        #     "crop_tlbr": tlbr,
+        #     "original_size": (self.args.imgsz[0], self.args.imgsz[1]),
+        # }
+        # if (h, w) != (self.args.imgsz[0], self.args.imgsz[1]):
+        #     self.pre_crop_cfg["is_crop"] = True
+        #     self.pre_crop_cfg["scale"] = w / self.args.imgsz[1]
+        #     self.imgsz = (h, w)
+        # else:
+        #     self.imgsz = (self.args.imgsz[0], self.args.imgsz[1])
         
-        h = self.args.imgsz[0] // self.model.stride * self.model.stride
-        w = math.ceil(self.args.imgsz[1] / self.model.stride) * self.model.stride
-        self.pre_crop_cfg = {"is_crop": False, 
-                             "scale": 1, 
-                             "target_size": (self.args.imgsz[0], self.args.imgsz[1]), 
-                             "original_size": (self.args.imgsz[0], self.args.imgsz[1])}
-        if (h, w) != (self.args.imgsz[0], self.args.imgsz[1]):
-            self.pre_crop_cfg["is_crop"] = True
-            self.pre_crop_cfg["scale"] = w / self.args.imgsz[1]
-            self.pre_crop_cfg["target_size"] = (h, w)
-            self.imgsz = (h, w)
-        else:
-            self.imgsz = (self.args.imgsz[0], self.args.imgsz[1])
-            
+        # Resize and crop image size    
+        crop_size = (512, 1024)
+        assert crop_size[0] % 32 == 0 and crop_size[1] % 32 == 0, "Image size must be divisible by 32."
+        tlbr = (220, 0, 220 + crop_size[0], 0 + crop_size[1])
+        # image resolution preprocessing
+        self.pre_crop_cfg = {
+            "is_crop": True,  # whether to crop images
+            "scale": crop_size[1] / self.args.imgsz[1],  # scale factor for width
+            "crop_tlbr": tlbr,  # top-left-bottom-right coordinates for cropping
+            "original_size": (self.args.imgsz[0], self.args.imgsz[1])
+        }
+        LOGGER.warning(
+            f"Image size {self.args.imgsz} will be resized and cropped to {crop_size} for prediction."
+        )
+        # Update image size for the model
+        self.imgsz = crop_size
+
         if self.use_radar:
             if self.pre_crop_cfg["is_crop"]:  # if use the ManitouResizeCrop_MultiImg, we need to update the camera intrinsics
                 LOGGER.info("Updating camera intrinsics for Manitou dataset with pre-crop configuration.")
                 # update camera intrinsics
-                h, w = self.pre_crop_cfg["original_size"]
-                crop_h, crop_w = self.pre_crop_cfg["target_size"]
-                new_h, new_w = int(h *self.pre_crop_cfg["scale"]), int(w * self.pre_crop_cfg["scale"])
-                y_off = new_h - crop_h
+                # h, w = self.pre_crop_cfg["original_size"]
+                # crop_h, crop_w = self.pre_crop_cfg["target_size"]
+                # new_h, new_w = int(h *self.pre_crop_cfg["scale"]), int(w * self.pre_crop_cfg["scale"])
+                # y_off = new_h - crop_h
+                # for cam_idx in range(1, 5):
+                #     mat_K = self.calib_params[f"camera{cam_idx}_K"]
+                #     cvt_mat = np.array([
+                #                     [self.pre_crop_cfg["scale"], 0,                           0],
+                #                     [0,                          self.pre_crop_cfg["scale"],  -y_off],
+                #                     [0,                          0,                           1]
+                #                 ], dtype=mat_K.dtype)
+                #     self.calib_params[f"new_camera{cam_idx}_K"] = cvt_mat @ mat_K
+                from ultralytics.data.augmentV1 import ManitouResizeCrop
+                pre_crop = ManitouResizeCrop(
+                    self.pre_crop_cfg["scale"],
+                    self.pre_crop_cfg["crop_tlbr"],
+                    1.0 if self.pre_crop_cfg["is_crop"] else 0.0,)
                 for cam_idx in range(1, 5):
-                    mat_K = self.calib_params[f"camera{cam_idx}_K"]
-                    cvt_mat = np.array([
-                                    [self.pre_crop_cfg["scale"], 0,                           0],
-                                    [0,                          self.pre_crop_cfg["scale"],  -y_off],
-                                    [0,                          0,                           1]
-                                ], dtype=mat_K.dtype)
-                    self.calib_params[f"new_camera{cam_idx}_K"] = cvt_mat @ mat_K
+                    self.calib_params[f"new_camera{cam_idx}_K"] = pre_crop.update_camera_intrinsics(self.calib_params[f"camera{cam_idx}_K"])
 
         radar_accumulation = data_cfg.pop("radar_accumulation", 3)
         
@@ -242,11 +281,11 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
                                                  batch=1,
                                                  pre_transform=self.get_pre_transform(),
                                                  use_radar=self.use_radar)
-        
+
 
     def postprocess(self, preds, _batch):
         """
-        Post-process predictions and return a list of Results objects.
+        Post-process predictions and return a list of ManitouResults objects.
 
         This method applies non-maximum suppression to raw model predictions and prepares them for visualization and
         further analysis.
@@ -257,7 +296,7 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
             **kwargs (Any): Additional keyword arguments.
 
         Returns:
-            (list): List of Results objects containing the post-processed predictions.
+            (list): List of ManitouResults objects containing the post-processed predictions.
 
         Examples:
             >>> predictor = DetectionPredictor(overrides=dict(model="yolo11n.pt"))
@@ -294,85 +333,27 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
             for r, f in zip(results, obj_feats):
                 r.feats = f  # add object features to results
                 
-        results = {"cameras": results, "radars": [_batch[i]["radar"] for i in range(len(_batch))]}  # add radar data to results
+        results = {"cameras": results, "radars": _batch[0]["radar"]}  # add radar data to results
 
         return results
-
-    def postprocess_forReid(self, preds, features, _batch):
-        """
-        Post-process predictions and return a list of Results objects.
-
-        This method applies non-maximum suppression to raw model predictions and prepares them for visualization and
-        further analysis.
-
-        Args:
-            preds (torch.Tensor): Raw predictions from the model.
-            orig_imgs (torch.Tensor | list): Original input images before preprocessing.
-            **kwargs (Any): Additional keyword arguments.
-
-        Returns:
-            (list): List of Results objects containing the post-processed predictions.
-
-        Examples:
-            >>> predictor = DetectionPredictor(overrides=dict(model="yolo11n.pt"))
-            >>> results = predictor.predict("path/to/image.jpg")
-            >>> processed_results = predictor.postprocess(preds, img, orig_imgs)
-        """
-        save_feats = getattr(self, "save_feats", False)
-        orig_imgs = [_batch[i]["orig_images"][f"cam{j}"] for i in range(len(_batch)) for j in range(1, 5)]  # get original images from batch
-        paths = [self.batch[0][i][f"cam{j}"] for i in range(len(self.batch[0])) for j in range(1, 5)]  # get paths from batch
-        
-        save_feats = True
-
-        preds = ops.non_max_suppression_forReid(
-            preds,
-            features,
-            self.args.conf,
-            self.args.iou,
-            self.args.classes,
-            self.args.agnostic_nms,
-            max_det=self.args.max_det,
-            nc=0 if self.args.task == "detect" else len(self.model.names),
-            end2end=getattr(self.model, "end2end", False),
-            rotated=self.args.task == "obb",
-            return_idxs=save_feats,
-        )
-
-        if not isinstance(orig_imgs, list):  # input images are a torch.Tensor, not a list
-            orig_imgs = ops.convert_torch2numpy_batch(orig_imgs)
-
-
-        if save_feats:
-            obj_feats = preds[0][2]
-            preds = preds[0][0]
-
-        results = self.construct_results(preds, orig_imgs, paths)
-
-        if save_feats:
-            for r, f in zip(results, obj_feats):
-                r.feats = f  # add object features to results
-                
-        results = {"cameras": results, "radars": [_batch[i]["radar"] for i in range(len(_batch))]}  # add radar data to results
-
-        return results        
     
     def construct_results(self, preds, orig_imgs, paths):
         """
-        Construct a list of Results objects from model predictions.
+        Construct a list of ManitouResults objects from model predictions.
 
         Args:
             preds (List[torch.Tensor]): List of predicted bounding boxes and scores for each image.
             orig_imgs (List[np.ndarray]): List of original images before preprocessing.
 
         Returns:
-            (List[Results]): List of Results objects containing detection information for each image.
+            (List[ManitouResults]): List of ManitouResults objects containing detection information for each image.
         """
         res_list = []
         
         for pred, orig_img, img_path in zip(preds, orig_imgs, paths):
-            assert orig_img.shape[:2] == self.pre_crop_cfg["original_size"], f"Original image size {orig_img.shape[:2]} does not match pre-crop cfg {self.pre_crop_cfg['original_size']}"
+            assert tuple(orig_img.shape[:2]) == tuple(self.pre_crop_cfg["original_size"]), f"Original image size {orig_img.shape[:2]} does not match `original_size` in pre-crop cfg {self.pre_crop_cfg['original_size']}"
             pred[:, :4] = invert_manitou_resize_crop_xyxy(pred[:, :4], self.pre_crop_cfg)
-            res_list.append(Results(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6]))
+            res_list.append(ManitouResults(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6]))
     
         return res_list
     
@@ -396,10 +377,11 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         
         radar = batch[i]["radar"]
         # draw radar on cameras
-        #cam1 = radar.get_overlay_image(1, cam1)
-        #cam2 = radar.get_overlay_image(2, cam2)
-        #cam3 = radar.get_overlay_image(3, cam3)
-        #cam4 = radar.get_overlay_image(4, cam4)
+        if self.draw_radar:
+            cam1 = radar.get_overlay_image(1, cam1)
+            cam2 = radar.get_overlay_image(2, cam2)
+            cam3 = radar.get_overlay_image(3, cam3)
+            cam4 = radar.get_overlay_image(4, cam4)
         
         cams = [cam1, cam2, cam3, cam4]
         string = ""  # print string
@@ -456,6 +438,11 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         if self.args.save:
             (self.save_dir / rosbag).mkdir(parents=True, exist_ok=True)
             self.save_predicted_images(str(self.save_dir / rosbag / Path(p[i]["cam1"]).name))
+            if self.use_radar:
+                # save bev
+                (self.save_dir / rosbag / "bev").mkdir(parents=True, exist_ok=True)
+                bev_img = radar.get_radar_bev()
+                cv2.imwrite(str(self.save_dir / rosbag / "bev" / Path(p[i]["cam1"]).name) + "_bev.jpg", bev_img)
 
         return string
     
@@ -464,11 +451,3 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         cv2.imwrite(str(Path(save_path).with_suffix(".jpg")), im) 
 
 
-    def inference(self, im, *args, **kwargs):
-        """Run inference on a given image using the specified model and arguments."""
-        visualize = (
-            increment_path(self.save_dir / Path(self.batch[0][0]).stem, mkdir=True)
-            if self.args.visualize and (not self.source_type.tensor)
-            else False
-        )
-        return self.model(im, augment=self.args.augment, visualize=visualize, embed=self.model.model.featmap_idxs, *args, **kwargs)

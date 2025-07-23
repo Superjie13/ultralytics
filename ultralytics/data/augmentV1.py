@@ -1,21 +1,25 @@
-import cv2
-import numpy as np
 import functools
 import random
-from .augment import *
-from ultralytics.utils.ops import segment2box
+
+import cv2
+import numpy as np
+
 from ultralytics.utils.instance import Instances
+from ultralytics.utils.ops import segment2box
+
+from .augment import *
 
 
 class MosaicV1(Mosaic):
-    """
-    Mosaic adapted to support rectangular images, i.e., width != height.
-    """
-            
+    """Mosaic adapted to support rectangular images, i.e., width != height."""
+
     def _merge_into_first_label(fn):
-        """Decorator to update the labels instead of returning a new dict.
+        """
+        Decorator to update the labels instead of returning a new dict.
+
         This is used for the `Mosaic` transformation.
         """
+
         @functools.wraps(fn)
         def wrapper(self, mosaic_labels, *args, **kwargs):
             new_labels = fn(self, mosaic_labels, *args, **kwargs)
@@ -24,31 +28,34 @@ class MosaicV1(Mosaic):
                 original.update(new_labels)
                 return original
             return new_labels
+
         return wrapper
-    
+
     def __init__(self, dataset, imgsz=640, p=1.0, n=4, pre_transform=None):
         assert 0 <= p <= 1.0, f"The probability should be in range [0, 1], but got {p}."
         assert n in {4}, "grid must be equal to 4 (combine 4 images)."
         if isinstance(imgsz, int):
             imgsz = [imgsz, imgsz]
-        assert isinstance(imgsz, (list, tuple)) and len(imgsz) == 2, f"imgsz should be a list or tuple of length 2 (h, w), but got {imgsz}."
+        assert isinstance(imgsz, (list, tuple)) and len(imgsz) == 2, (
+            f"imgsz should be a list or tuple of length 2 (h, w), but got {imgsz}."
+        )
         self.imgsz = imgsz  # (h, w)
-        self.border = (-imgsz[0] // 2, -imgsz[1] // 2)  # border size for the mosaic 
+        self.border = (-imgsz[0] // 2, -imgsz[1] // 2)  # border size for the mosaic
         self.n = n  # number of images to combine
         self.p = p  # probability of applying mosaic
         self.pre_transform = pre_transform  # pre-transform to apply to each image
         self.dataset = dataset  # dataset to use for mosaic
-           
+
     def _mosaic4(self, labels):
         mosaic_labels = []
         im_h, im_w = self.imgsz
         new_h, new_w = im_h * 2, im_w * 2
         border_y, border_x = self.border
-        
+
         # randomly select a center point for the mosaic
         xc = int(random.uniform(-border_x, new_w + border_x))  # mosaic center x
         yc = int(random.uniform(-border_y, new_h + border_y))  # mosaic center y
-        
+
         for i in range(4):
             labels_patch = labels if i == 0 else labels["mix_labels"][i - 1]
             # Load image
@@ -79,7 +86,7 @@ class MosaicV1(Mosaic):
         final_labels = self._cat_labels(mosaic_labels)
         final_labels["img"] = img4
         return final_labels
-    
+
     @_merge_into_first_label
     def _cat_labels(self, mosaic_labels):
         if len(mosaic_labels) == 0:
@@ -106,127 +113,133 @@ class MosaicV1(Mosaic):
         if "texts" in mosaic_labels[0]:
             final_labels["texts"] = mosaic_labels[0]["texts"]
         return final_labels
-    
+
 
 class ManitouResizeCrop:
     """
-        Resize and crop (top-left, (h, w)) the image , bounding box, and segmentations based on the given configuration.
-        Step 1: Resize the image based on the width
-        Step 2: Crop the image to the specified height
-        In this way, the image only loses the upper part, which is less important for the model.
-    """
-    def __init__(self, scale, target_size, original_size, p):
-        self.scale = scale
-        self.target_size = target_size
-        self.original_size = original_size
-        self.p = p
-        
-        self.rescaled_size = (int(original_size[0] * scale), int(original_size[1] * scale))
-        self.y_offset = self.rescaled_size[0] - target_size[0]  # y offset for cropping
-        self.x_offset = 0  # x offset for cropping, always 0 in this case
+    Resize and crop the image, bounding boxes, and segmentations based on provided crop coordinates.
 
-    def __call__(self, labels=None, image=None):
+    Step 1: Resize the image by a given scale.
+    Step 2: Crop the resized image using specified top-left and bottom-right coordinates.
+    The crop coordinates are defined in the original image space and scaled accordingly.
+    """
+
+    def __init__(self, scale, tlbr, p):
         """
         Args:
-            labels (Dict, None): Dictionary containing image data and associated labels, or enpty Dict if None.
-            image (np.ndarray, None): The input image as a numpy array. If None, the image is taken from `labels`.
-        Returns:
-            (Dict | np.ndarray): If `labels` is provided, returns an updated dictionary with the resized and cropped image,
-                updated labels, and additional metadata. If `labels` is empty, returns a tuple containing the resized 
-                and cropped image.
+        scale (float): Scaling factor for resizing the image.
+        tlbr (tuple[int, int, int, int]): Crop window in scaled image coordinates as (y1, x1, y2, x2).
         """
+        self.scale = scale
+        self.tlbr = tlbr
+        self.y1, self.x1, self.y2, self.x2 = tlbr
+        self.crop_h = self.y2 - self.y1
+        self.crop_w = self.x2 - self.x1
+        self.p = p
+
+    def __call__(self, labels=None, image=None):
         if labels is None:
             labels = {}
-        
-        if random.random() < self.p:       
+
+        if random.random() < self.p:
             img = labels.get("img") if image is None else image
             h, w = img.shape[:2]
-            crop_h, crop_w = self.target_size
-            img = cv2.resize(img, (int(w * self.scale), int(h * self.scale)), interpolation=cv2.INTER_LINEAR)
-            new_h, new_w = img.shape[:2]
-            img = img[new_h-crop_h: new_h, :crop_w]
 
+            # Resize the image
+            new_w = int(w * self.scale)
+            new_h = int(h * self.scale)
+            img_resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+
+            # Crop on resized image
+            img_cropped = img_resized[self.y1:self.y2, self.x1:self.x2]
+
+            # Handle instances if provided
             instances = labels.pop("instances", None)
             if instances is not None:
                 if instances.normalized:
                     instances.denormalize(w, h)
-                    
+
                 cls = labels.pop("cls", [])
                 segments = instances.segments
                 ins_ids = labels.pop("ins_ids", [])
-                
-                y_offset = new_h - crop_h
-                x_offset = 0
-                
-                new_bboxes_xyxy, new_segments, mask = self.apply_segments(segments, x_offset, y_offset)
+
+                # Scale and crop segments and bounding boxes
+                new_bboxes, new_segments, mask = self._apply_segments(segments)
                 new_cls = cls[mask]
                 new_ins_ids = ins_ids[mask]
-                
-                assert len(new_cls) == len(new_bboxes_xyxy) == len(new_segments), \
-                    f"cls: {len(new_cls)}, bboxes: {len(new_bboxes_xyxy)}, segments: {len(new_segments)}"
-                
-                new_instances = Instances(new_bboxes_xyxy, new_segments, bbox_format="xyxy", normalized=False)
-                
+
+                # Create new instances
+                new_instances = Instances(
+                    new_bboxes, new_segments, bbox_format="xyxy", normalized=False
+                )
+
                 labels["cls"] = new_cls
                 labels["ins_ids"] = new_ins_ids
                 labels["instances"] = new_instances
-                labels["img"] = img
-                labels["manitou_resize_crop"] = {"scale": self.scale, "target_size": self.target_size}
-                labels["resized_shape"] = self.target_size
-                
+                labels["img"] = img_cropped
+                labels["manitou_resize_crop"] = {"scale": self.scale, "tlbr": self.tlbr}
+                labels["resized_shape"] = (self.crop_h, self.crop_w)
+
             # update the camera intrinsics if available
             intrinsic_K = labels.get("intrinsic_K", None)
             if intrinsic_K is not None:
                 labels["intrinsic_K"] = self.update_camera_intrinsics(intrinsic_K)
-            
+
         if len(labels) > 0:
             return labels
         else:
-            return img
-            
-    def apply_segments(self, segments, x_offset, y_offset):
-        
-        n, num = segments.shape[:2]
+            return img_cropped
+
+    def _apply_segments(self, segments):
+        """
+        Scale and crop segmentations, then compute bounding boxes.
+        """
+        n = segments.shape[0]
         if n == 0:
-            return np.zeros((0, 4), dtype=np.float32), segments, np.ones(n, dtype=bool)
+            return np.zeros((0, 4), dtype=np.float32), segments, np.zeros(0, dtype=bool)
         
-        segments = segments * self.scale
-        # crop the segments
-        segments[:, :, 0] = np.clip(segments[:, :, 0] - x_offset, 0, self.target_size[1])
-        segments[:, :, 1] = np.clip(segments[:, :, 1] - y_offset, 0, self.target_size[0])
-        
-        bboxes_xyxy = np.stack([segment2box(seg, *self.target_size[:2][::-1]) for seg in segments], axis=0)
-        # remove bboxes 
-        _w = bboxes_xyxy[:, 2] - bboxes_xyxy[:, 0]
-        _h = bboxes_xyxy[:, 3] - bboxes_xyxy[:, 1]
-        mask = np.logical_and(_w > 5, _h > 5)
-        segments = segments[mask]
-        bboxes_xyxy = bboxes_xyxy[mask]
-        
-        return bboxes_xyxy, segments, mask  
+        segments_scaled = segments * self.scale
+        # Translate and clip segments to crop window
+        segments_scaled[:, :, 0] = np.clip(segments_scaled[:, :, 0] - self.x1, 0, self.crop_w)
+        segments_scaled[:, :, 1] = np.clip(segments_scaled[:, :, 1] - self.y1, 0, self.crop_h)
+
+        bboxes = np.stack([
+            segment2box(seg, width=self.crop_w, height=self.crop_h)
+            for seg in segments_scaled
+        ], axis=0)
+
+        # Filter out small boxes (optional)
+        widths = bboxes[:, 2] - bboxes[:, 0]
+        heights = bboxes[:, 3] - bboxes[:, 1]
+        mask = np.logical_and(widths > 5, heights > 5)
+
+        return bboxes[mask], segments_scaled[mask], mask
     
     def update_camera_intrinsics(self, intrinsic):
-        """Update the camera intrinsics"""
+        """
+        Update camera intrinsic matrix for scaling and cropping.
+        """
         M = np.array([
-                [self.scale, 0,            0],
-                [0,          self.scale,  -self.y_offset],
-                [0,          0,            1]
-            ], dtype=intrinsic.dtype)
+            [self.scale, 0, -self.x1],
+            [0, self.scale, -self.y1],
+            [0, 0, 1]
+        ], dtype=intrinsic.dtype)
         return M @ intrinsic
-                
-        
+
+
 def v8_transformsV1(dataset, imgsz, hyp, pre_crop_cfg, stretch=False):
-    """
-    Adapted from v8_transforms to support rectangular images.
-    """
+    """Adapted from v8_transforms to support rectangular images."""
     if isinstance(imgsz, int):
         imgsz = [imgsz, imgsz]
-    assert isinstance(imgsz, (list, tuple)) and len(imgsz) == 2, f"imgsz should be a list or tuple of length 2 (h, w), but got {imgsz}."
-    
-    resize_crop = ManitouResizeCrop(pre_crop_cfg["scale"],
-                                    pre_crop_cfg["target_size"],
-                                    pre_crop_cfg["original_size"],
-                                    1.0 if pre_crop_cfg["is_crop"] else 0.0)
+    assert isinstance(imgsz, (list, tuple)) and len(imgsz) == 2, (
+        f"imgsz should be a list or tuple of length 2 (h, w), but got {imgsz}."
+    )
+
+    resize_crop = ManitouResizeCrop(
+        pre_crop_cfg["scale"],
+        pre_crop_cfg["crop_tlbr"],
+        1.0 if pre_crop_cfg["is_crop"] else 0.0,
+    )
     mosaic = MosaicV1(dataset, imgsz=imgsz, p=hyp.mosaic, pre_transform=Compose([resize_crop]))
     affine = RandomPerspective(
         degrees=hyp.degrees,
@@ -237,14 +250,22 @@ def v8_transformsV1(dataset, imgsz, hyp, pre_crop_cfg, stretch=False):
         pre_transform=None if stretch else resize_crop,
     )
 
-    pre_transform = Compose([resize_crop, mosaic, affine])
+    pre_transform = Compose([mosaic, affine])
     if hyp.copy_paste_mode == "flip":
-        pre_transform.insert(1+1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode))  # +1 because of insert `resize_crop` at the beginning
+        pre_transform.insert(
+            1 + 1, CopyPaste(p=hyp.copy_paste, mode=hyp.copy_paste_mode)
+        )  # +1 because of insert `resize_crop` at the beginning
     else:
         pre_transform.append(
             CopyPaste(
                 dataset,
-                pre_transform=Compose([resize_crop, MosaicV1(dataset, imgsz=imgsz, p=hyp.mosaic, pre_transform=Compose([resize_crop])), affine]),
+                pre_transform=Compose(
+                    [
+                        # resize_crop,
+                        MosaicV1(dataset, imgsz=imgsz, p=hyp.mosaic, pre_transform=Compose([resize_crop])),
+                        affine,
+                    ]
+                ),
                 p=hyp.copy_paste,
                 mode=hyp.copy_paste_mode,
             )
@@ -269,7 +290,7 @@ def v8_transformsV1(dataset, imgsz, hyp, pre_crop_cfg, stretch=False):
             RandomFlip(direction="horizontal", p=hyp.fliplr, flip_idx=flip_idx),
         ]
     )  # transforms
-     
+
 
 class FormatManitou(Format):
     def __init__(
@@ -291,9 +312,8 @@ class FormatManitou(Format):
         self.mask_overlap = mask_overlap
         self.batch_idx = batch_idx  # keep the batch indexes
         self.bgr = bgr
-        
+
     def __call__(self, labels):
         labels.pop("prev", None)  # in case recursive call when using pin_memory=True
         labels.pop("next", None)  # in case recursive call when using pin_memory=True
         return super().__call__(labels)
-    

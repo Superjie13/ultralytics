@@ -136,7 +136,6 @@ class ManitouTrainer_MultiCam(ManitouTrainer):
                 self.testset, batch_size=batch_size if self.args.task == "obb" else batch_size * 2, rank=-1, mode="val"
             )
             self.validator = self.get_validator()
-            self.loss_names = "box_loss", "cls_loss", "dfl_loss", "reid_loss"
             metric_keys = self.validator.metrics.keys + self.label_loss_items(prefix="val")
             self.metrics = dict(zip(metric_keys, [0] * len(metric_keys)))
             self.ema = ModelEMA(self.model)
@@ -205,12 +204,6 @@ class ManitouTrainer_MultiCam(ManitouTrainer):
                 LOGGER.info(self.progress_string())
                 pbar = TQDM(enumerate(self.train_loader), total=nb)
             self.tloss = None
-
-            if world_size > 1:
-                self.model.module.is_train = True
-            else:
-                self.model.is_train = True
-
             for i, batch in pbar:
                 self.run_callbacks("on_train_batch_start")
                 # Warmup
@@ -230,7 +223,7 @@ class ManitouTrainer_MultiCam(ManitouTrainer):
                 with autocast(self.amp):
                     _batch = self.preprocess_batch(batch)
                     batch, ref_batch = _batch["key_frames"], _batch["ref_frames"]
-                    loss, self.loss_items = self.model(_batch)
+                    loss, self.loss_items = self.model(batch)
                     self.loss = loss.sum()
                     if RANK != -1:
                         self.loss *= world_size
@@ -332,7 +325,7 @@ class ManitouTrainer_MultiCam(ManitouTrainer):
         
     def get_validator(self):
         """Return a DetectionValidator for YOLO model validation."""
-        self.loss_names = "box_loss", "cls_loss", "dfl_loss", "reid_loss"
+        self.loss_names = "box_loss", "cls_loss", "dfl_loss"
         return yolo_manitou.detect_multiCam.ManitouValidator_MultiCam(
             self.test_loader, save_dir=self.save_dir, args=copy(self.args), _callbacks=self.callbacks
         )
@@ -422,3 +415,4 @@ class ManitouTrainer_MultiCam(ManitouTrainer):
         boxes = np.concatenate([lb["bboxes"] for lb in self.train_loader.dataset.labels], 0)
         cls = np.concatenate([lb["cls"] for lb in self.train_loader.dataset.labels], 0)
         plot_labels(boxes, cls.squeeze(), names=self.data["names"], save_dir=self.save_dir, on_plot=self.on_plot)
+        

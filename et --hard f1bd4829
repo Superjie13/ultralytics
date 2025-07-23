@@ -1,0 +1,119 @@
+[33mf1bd4829[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mdetect_reid[m[33m)[m Segmentation + Reid training to detect_reid branch
+[33m40a29f08[m add Reid
+[33m2ea17206[m[33m ([m[1;31morigin/main[m[33m, [m[1;31morigin/HEAD[m[33m)[m add use_radar to control if load radar
+[33m83121159[m correct to load `mot_instance_id` as ins_id
+[33md2923a72[m[33m ([m[1;32mmain[m[33m)[m update
+[33m0b3fa5a8[m update
+[33me9705086[m update
+[33m3a56eeb6[m update
+[33m35842695[m update nn/tasks.py to support call DetectionModel_MultiView model
+[33m71e9af64[m update nn/tasks.py to support call DetectionModel_MultiView model
+[33me52be664[m update nn/tasks.py to support call DetectionModel_MultiView model
+[33mddfa0ed0[m update multi-view detection
+[33m174c3f12[m update
+[33m7d1ff37c[m update
+[33m9ba94183[m to support ins segmentation
+[33m08b8bf51[m to support radar data
+[33mc23c9725[m correct the way to construct ref_image to avoid cpu memory increasing
+[33m0eb27d26[m correct the way to construct ref_image to avoid cpu memory increasing
+[33mbdc2df28[m update manitou dataset to support radar data
+[33mb16e3631[m add ManitouRadarPC class to manage 4 radars
+[33ma0c90644[m add ManitouRadarPC class to manage 4 radars
+[33md2937107[m add ManitouRadarPC class to manage 4 radars
+[33m5affd1db[m To address the length mismatch issue of 4 cameras in Manitou dataset
+[33mccd80c80[m to support manitou dataset for multi-camera
+[33m6a315b94[m to support manitou dataset
+[33m94715215[m Remove `streamlit>=1.29.0` and `shapely>=2.0.0` version ceilings (#20045)
+[33m1a212e99[m Add Custom Installation Section to Quickstart Docs (#20430)
+[33mefdafa9c[m Improve speed estimation using `track` history and region-free calculation (#20344)
+[33mfba1b3f5[m `ultralytics 8.3.121` Add FocalLoss multi-class support (#20388)
+[33m2c242bcb[m Update CI to Python 3.12 (#20366)
+[33m40b6bf67[m Use `MINMAX_CALIBRATION` algo for TensorRT int8 calibration (#20345)
+[33m2b96e4d8[m Check if `curl` is installed before use (#20426)
+[33mf32d0c49[m Fix CutMix augmentation (#20420)
+[33m10070fa2[m Update Cutmix augmentation docs (#20425)
+[33m4b2e0e26[m `ultralytics 8.3.120` CutMix augmentation fix via IoU overlaps (#20393)
+[33m890fcc88[m Fix BOTSORT initialization with ReID set to False (#20392)
+[33mf0bd5b4c[m YOLOE: Clean up duplicated modules (#20416)
+[33m3b2427ff[m YOLOE: Fix visual prompt training (#20413)
+[33me700646e[m Remove redundant `get_indexes` functions  in `augment.py` (#20389)
+[33mc55dd925[m Bump astral-sh/setup-uv from 5 to 6 in /.github/workflows (#20390)
+[33m20196b57[m `ultralytics 8.3.119` New CutMix image augmentation (#19870)
+[33md0f344ba[m Remove `g++` and `libusb-1.0-0` from Docker linux installs (#20384)
+[33m180dfa1e[m Dockerfile cleanup (#20382)
+[33m03412a1e[m Remove `tflite_support` and `flatbuffers` dependencies (#20383)
+[33m0010efe9[m Update docker-quickstart.md (#20380)
+[33m7b324694[m Fix NMS box format comment from xyxy to xywh (#20376)
+[33ma4965897[m Add W&B and MLFlow to pyproject.toml logging dependencies (#20371)
+[33m9c06a98b[m Update `onnxslim>=0.1.46` (#20369)
+[33m0651305f[m `ultralytics 8.3.118` Use new TorchScript MobileCLIP model (#20354)
+[33mc6e41021[m Add Grayscale image training support (#20310)
+[33mb6088ad7[m Dockerfile export Sony IMX with YOLO11 (#20367)
+[33m41a812a0[m Implement 3.12-compatible Raspberry Pi CI (#20361)
+[33ma7c57ee9[m Add `tests` directory to package for Conda builds (#20365)
+[33mdf03ddc2[m Remove special CoreML<>protobuf handling (#20362)
+[33m3efef820[m `ultralytics 8.3.117` Replace TFLite Support with JSON metadata  (#16413)
+[33m4c5bb871[m Fix box sizes for CoreML exports (#20357)
+[33mbaa811d5[m Add Benchmarks CI to `Dockerfile-arm64` (#20236)
+[33mdc9b0c1e[m Fix predictions if metadata is missing (#20353)
+[33mef662982[m Use Ultralytics MobileCLIP fork for YOLOE (#20337)
+[33m0c2a697f[m Fix DDP with Gloo backend on Windows (#20330)
+[33m911023c8[m Fix private local import issue (#20343)
+[33m25c0f68d[m Add https://youtu.be/IYWQZvtOy_Q to docs (#20347)
+[33m0232a541[m `ultralytics 8.3.116` RTDETR VarifocalLoss `gamma` and `alpha` parameterization (#20292)
+[33mac3b2806[m Add workflow-level CI permissions for security (#20336)
+[33m17724c10[m Remove redundant coordinate conversions for `nms=True` (#20334)
+[33m95afd54c[m FROM pytorch/pytorch:2.7.0-cuda12.6-cudnn9-runtime (#20335)
+[33m41e3cb95[m Add `show_conf` and `show_labels` for Solutions (#20282)
+[33m4d9126ee[m Add `half` argument to Torchscript export allowlist (#20313)
+[33m315edfec[m Fix `non_max_suppression` when applying `classes` argument (#20322)
+[33me91a4969[m Fix YOLOE usage in `model.py` (#20321)
+[33m37e518ef[m Update `Tuple` return type annotations in `docstrings` (#20274)
+[33m65bb0e98[m `ultralytics 8.3.115` TIFF image RGB training and prediction support (#20301)
+[33m3f16fff8[m Bug Fix: Incorrect Use of RANK in Distributed Context Manager (#20312)
+[33m7765d0ec[m Fix usage in `yoloe.md` FAQ section (#20307)
+[33mf8de027b[m Add slow disk read speed warning (#20303)
+[33md45d64d4[m Add additional Google-style docstring examples (#20309)
+[33m68ec1c10[m Remove nested spans form Mkdocstrings HTML (#20293)
+[33m70f9c108[m `ultralytics 8.3.114` New tracker re-identification (ReID) of lost tracks (#20192)
+[33mab3a81fd[m Update `dota8-multispectral.yaml` (#20270)
+[33m981e79d4[m Update `coco8-multispectral` docs (#20272)
+[33m66dca7a8[m Refactor code line number links to use <span> tags (#20290)
+[33mb2b151d6[m Restore missing f-string (#20280)
+[33m67a2b86c[m Parse `channels` as `int` in metadata (#20288)
+[33m4b972df8[m Remove href attributes from code line numbers in Docs code blocks (#20286)
+[33m93db9143[m `ultralytics 8.3.113` New DOTA8-Multispectral dataset (#20269)
+[33m551d459a[m Increase region count display size and add color-based visualization (#20235)
+[33m4de8e854[m Add OBB support for SAHI (#20256)
+[33mce2d0e5a[m Eliminate channel resorting for multi-channel images (#20263)
+[33md3679ca3[m Update extra.js with dark mode fixes (#20268)
+[33mfddc9c73[m Update extra.js with cxkit-js (#20266)
+[33mf5e15bcc[m Intel `device` support (#20203)
+[33m9d04980a[m Add `classes` to validation args (#20250)
+[33m51918c42[m `ultralytics 8.3.12` New YOLO Multispectral Image Support (#20223)
+[33m560c0af1[m Update `build_reference.py` for automatic `mkdocs.yml` updates (#20247)
+[33m19b237cc[m Integrate "WARNING ⚠️" and "ERROR ❌" prefixes for LOGGER (#20246)
+[33m74fcd74f[m Refactor `autosplit` and implement `split_classify_dataset` (#20245)
+[33m61dee374[m Add PIL `results.plot(save=True)` test (#20241)
+[33m47e31e24[m Fix Annotator tuples>lists (#20242)
+[33m89d91cf3[m Classify results background transparency (#20239)
+[33m34c05310[m Fix test_solutions.py Streamlit test (#20233)
+[33m3d0a5923[m Scope `tensorboard.SummaryWriter` import (#20220)
+[33ma7ca31d8[m Allow validation with `rect` for dynamic models (#20232)
+[33mbdfac623[m Update extra.js with `0.3.20/dist/embed.min.js` (#20230)
+[33m664ec1ab[m Fix stale workflow (#20227)
+[33m2637a501[m RTDETR: Remove unused `preprocess_batch` function (#20215)
+[33m2ed89622[m Add Tests CI after building Arm64 Docker images (#19672)
+[33ma2a16cfe[m New COCO8-Multispectral dataset (#20221)
+[33m9aed387c[m Add https://youtu.be/ENQXiK7HF5o to docs (#20218)
+[33m3b6676a7[m Update MobileSAM documentation (#20219)
+[33m47d402b0[m `ultralytics 8.3.111` YOLOv10 skip `one2many` head when fused (#20193)
+[33m39e03c42[m Default `tensorboard=False` for speed (#20213)
+[33m1bdc601e[m Update links.yml to ignore TIMEOUT issues (#20210)
+[33m987f940d[m Explicit shape handling for dynamic YOLO-World exports to TensorRT (#20205)
+[33mc872e9d4[m `ultralytics 8.3.110` New dataset file access speed checks (#20197)
+[33mf94058a9[m Improve clarity of YOLOE prediction docs (#20201)
+[33mee2b03ee[m Improve hashing speed (#20184)
+[33m4e3756c6[m Include bash scripts in installation (#20186)
+[33m7aa1b7a7[m Add https://youtu.be/vKcD44GkSF8 to docs (#20190)
+[33m17375894[m `ultralytics

@@ -431,7 +431,7 @@ class v8DetectionReidLoss:
 
                     if gt_box.numel() == 0:
                         positive_idxs = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
-                        positive_list.append(positive_idxs)
+                        sample_list.append(positive_idxs)
                         continue
 
                     ious = bbox_iou(pred.unsqueeze(1), gt_box.unsqueeze(0),xywh=False,CIoU=True)[:, :, 0]  # (N, G)
@@ -557,7 +557,7 @@ class v8DetectionReidLoss:
                 k_ids = key_idx[k_slice][k_mask]
                 r_ids = ref_idx[r_slice][r_mask]
 
-                # Accès aux features (clé/ref séparés dans `features`)
+                # Accès aux features (key/ref séparés dans `features`)
                 feat_key = features[b * nb_cams + cam, k_ids]  # [N_k_cam, C]
                 feat_ref = features[b * nb_cams + batch_size * nb_cams + cam, r_ids]  # [N_r_cam, C]
                 #feat_key = features[b + cam*batch_size, k_ids]  # [N_k_cam, C]
@@ -634,7 +634,7 @@ class v8DetectionReidLoss:
                 s2_ids = samp2_idx[samp2_slice][samp2_mask]
                 #print("key idx", k_ids)
                 #print("ref idx", r_ids)
-                # Accès aux features (clé/ref séparés dans `features`)
+                # Accès aux features (key/ref séparés dans `features`)
                 feat_s1 = features[b * nb_cams + cam, s1_ids]  # [N_k_cam, C]
                 if self.is_train == True:
                     feat_s2 = features[b * nb_cams + batch_size * nb_cams + cam, s2_ids]  # [N_r_cam, C]
@@ -942,6 +942,410 @@ class v8SegmentationLoss(v8DetectionLoss):
 
         return loss / fg_mask.sum()
 
+class v8SegmentationReidLoss(v8DetectionReidLoss):
+    """Criterion class for computing training losses for YOLOv8 segmentation."""
+
+    def __init__(self, model):  # model must be de-paralleled
+        """Initialize the v8SegmentationLoss class with model parameters and mask overlap setting."""
+        super().__init__(model)
+        self.overlap = model.args.overlap_mask
+
+    def sampler(self, batch, gt_bboxes, batch_idx, preds, strides, im='key'):
+        B4, N = preds.shape[:2]  # B4 = Batch_size * 4
+        B = B4 // self.num_cam
+        preds = preds*strides
+        batch_samples = []
+        
+        for b in range(B):
+            sample_list = []
+            for cam_id in range(self.num_cam):
+                idx = b*self.num_cam + cam_id
+                pred = preds[idx]
+                gt_mask = (batch_idx == idx)
+        
+                gt_box = gt_bboxes[idx].to(self.device)
+                if im=='key':
+                    gt_ids = (torch.cat(batch['key_frames']['ins_ids'], dim=0).squeeze(1).long().to(self.device)[batch_idx == idx]
+                            if any(ins.numel() > 0 for ins in batch['key_frames']['ins_ids'])
+                            else torch.empty(0, dtype=torch.long, device=self.device))
+                        
+                    if gt_box.numel() == 0:
+                        positive_idxs = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+                        sample_list.append(positive_idxs)
+                        continue
+
+                    ious = bbox_iou(pred.unsqueeze(1), gt_box.unsqueeze(0),xywh=False,CIoU=True)[:, :, 0]  # (N, G)
+
+                    mask = ious > self.iou_thresh1
+                    ious_thresh = torch.where(mask, ious, torch.tensor(-1.0, device=ious.device))
+
+                    max_ious, gt_indices = ious_thresh.max(dim=1)
+                    pred_indices = torch.nonzero(max_ious > -1, as_tuple=False).squeeze(1)
+
+                    if pred_indices.numel() == 0:
+                        positive_idxs = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+                    else:
+                        positive_idxs = torch.stack([pred_indices, gt_ids[gt_indices[pred_indices]]], dim=1)  
+
+                        # Ajustement à nb_samples
+                        n_pos = positive_idxs.shape[0]
+                        if n_pos > self.nb_samples:
+                            indices = torch.randperm(n_pos, device=self.device)[:self.nb_samples]
+                            positive_idxs = positive_idxs[indices]
+                        elif n_pos < self.nb_samples:
+                            pad = torch.full((self.nb_samples - n_pos, 2), -1, dtype=torch.long, device=self.device)
+                            positive_idxs = torch.cat([positive_idxs, pad], dim=0)                        
+                    sample_list.append(positive_idxs)
+                    
+                elif im=='ref':
+                    gt_ids = (torch.cat(batch['ref_frames']['ins_ids'], dim=0).squeeze(1).long().to(self.device)[batch_idx == idx]
+                            if any(ins.numel() > 0 for ins in batch['ref_frames']['ins_ids'])
+                            else torch.empty(0, dtype=torch.long, device=self.device))
+
+                    ious = bbox_iou(pred.unsqueeze(1), gt_box.unsqueeze(0), xywh=False, CIoU=True)[:, :, 0]                
+
+                    if gt_box.numel() == 0:
+                        num_select = self.nb_samples
+                        neg_indices = torch.randperm(pred.shape[0], device=self.device)
+                        neg_indices = neg_indices[:num_select] if pred.shape[0] >= num_select else torch.cat([
+                            neg_indices, torch.full((num_select - pred.shape[0],), -1, device=device, dtype=torch.long)
+                        ])
+                        neg_samples = torch.stack([neg_indices, torch.full_like(neg_indices, -1)], dim=1)
+                        pos_samples = torch.full((num_select, 2), -1, dtype=torch.long, device=self.device)  # pour les positifs absents
+                        all_samples = torch.cat([pos_samples, neg_samples], dim=0)  # (2*num_select, 3)
+                        sample_list.append(all_samples)
+                        continue
+
+                    max_ious, gt_indices = ious.max(dim=1)
+                    pos_mask = max_ious > self.iou_thresh1
+                    pos_indices = torch.nonzero(pos_mask, as_tuple=False).squeeze(1)
+
+                    neg_mask = (ious < self.iou_thresh2).all(dim=1)
+                    neg_indices = torch.nonzero(neg_mask, as_tuple=False).squeeze(1)
+
+                    def sample_indices(src, k):
+                        if src.numel() == 0:
+                            return torch.full((k,), -1, dtype=torch.long, device=self.device)
+                        if src.numel() >= k:
+                            return src[torch.randperm(src.numel(), device=self.device)[:k]]
+                        else:
+                            pad = torch.full((k - src.numel(),), -1, dtype=torch.long, device=self.device)
+                            return torch.cat([src, pad], dim=0)
+
+                    pos_indices = sample_indices(pos_indices, self.nb_samples)
+                    neg_indices = sample_indices(neg_indices, self.nb_samples)
+
+                    pos_samples = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+                    neg_samples = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+
+                    valid_pos = pos_indices != -1
+                    if valid_pos.any():
+                        pos_samples[valid_pos, 0] = pos_indices[valid_pos]
+                        pos_samples[valid_pos, 1] = gt_ids[gt_indices[pos_indices[valid_pos]]]
+
+                    valid_neg = neg_indices != -1
+                    neg_samples[valid_neg, 0] = neg_indices[valid_neg]
+
+                    all_samples = torch.cat([pos_samples, neg_samples], dim=0)
+                    sample_list.append(all_samples)
+                    
+            batch_samples.append(torch.cat(sample_list, dim=0))
+
+        return batch_samples
+
+    def get_matchings(self, samples1, samples2, features, mask1, proto1, bbox1, mask2, proto2, bbox2, strides):
+        def extract_feats(mask, proto, bbox, feats, ids):
+            pred_mask = torch.einsum("in,nhw->ihw", mask[b*nb_cams + cam, ids], proto[b*nb_cams + cam])  # (n, 32) @ (32, 80, 80) -> (n, 80, 80)
+            pred_mask = (pred_mask.sigmoid() > 0.4).float()
+            cropped_mask = crop_mask(pred_mask, bbox[b*nb_cams + cam, ids])  # (N, H, W)
+            cropped_mask = cropped_mask.unsqueeze(1)                 # (N, 1, H, W)
+            feats = feats.unsqueeze(0)                      # (1, 128, H, W)
+            masked_feats = cropped_mask * feats                      # (N, 128, H, W)
+            return masked_feats.sum(dim=(2, 3)) / (cropped_mask.sum(dim=(2, 3)) + 1e-6)  # (N, 128)
+
+        similarity_matrix_list = []
+        target_matrix_list = []
+        dist_matrix_list = []
+
+        nb_cams = self.num_cam
+        batch_size = len(samples1)
+
+        bbox1 = bbox1 * strides / self.hyp.mask_ratio
+        bbox2 = bbox2 * strides / self.hyp.mask_ratio
+        for b in range(batch_size):
+            samp1 = samples1[b]  # [4 * nb_samples, 2]
+            samp2 = samples2[b]  # [4 * 2 * nb_samples, 2]
+
+            samp1_idx, samp1_ids = samp1[:, 0].long(), samp1[:, 1]
+            samp2_idx, samp2_ids = samp2[:, 0].long(), samp2[:, 1]
+
+            # Filtrage des indices valides
+            valid_samp1_mask = samp1_idx != -1
+            valid_samp2_mask = samp2_idx != -1
+
+            if valid_samp1_mask.sum() == 0 or valid_samp2_mask.sum() == 0:
+                similarity_matrix_list.append(torch.zeros((0, 0), device=self.device))
+                dist_matrix_list.append(torch.zeros((0, 0), device=self.device))
+                target_matrix_list.append(torch.zeros((0, 0), device=self.device))
+                continue
+
+            valid_samp1_ids = samp1_ids[valid_samp1_mask]
+            valid_samp2_ids = samp2_ids[valid_samp2_mask]
+            target_matrix = (valid_samp1_ids.unsqueeze(1) == valid_samp2_ids.unsqueeze(0)).float()
+            target_matrix_list.append(target_matrix)
+
+            feat_samp1_all, feat_samp2_all = [], []
+
+            for cam in range(nb_cams):
+                # Index range par caméra
+                samp1_slice = slice(cam * self.nb_samples, (cam + 1) * self.nb_samples)
+                if self.is_train == True:                    
+                    samp2_slice = slice(cam * self.nb_samples * 2, (cam + 1) * self.nb_samples * 2)
+                else:
+                    samp2_slice = samp1_slice
+
+                samp1_mask = samp1_idx[samp1_slice] != -1
+                samp2_mask = samp2_idx[samp2_slice] != -1
+
+                if samp1_mask.sum() == 0 and samp2_mask.sum() == 0:
+                    continue
+
+                s1_ids = samp1_idx[samp1_slice][samp1_mask]
+                s2_ids = samp2_idx[samp2_slice][samp2_mask]
+
+                # Accès aux features (key/ref séparés dans `features`)
+                feat_s1 = extract_feats(mask1, proto1, bbox1, features[b*nb_cams + cam], s1_ids)
+                if self.is_train == True:
+                    feat_s2 = extract_feats(mask2, proto2, bbox2, features[b * nb_cams + batch_size * nb_cams + cam], s2_ids)
+                else:
+                    feat_s2 = feat_s1
+
+                feat_samp1_all.append(feat_s1)
+                feat_samp2_all.append(feat_s2)
+            
+            if not feat_samp1_all or not feat_samp2_all:
+                similarity_matrix_list.append(torch.zeros((0, 0), device=self.device))
+                dist_matrix_list.append(torch.zeros((0, 0), device=self.device))
+                continue
+
+            dist_matrix = torch.mm(torch.cat(feat_samp1_all, dim=0), torch.cat(feat_samp2_all, dim=0).t())  # Distance matrix
+
+            # Concaténer tous les features valides et normaliser pour la cosine
+            feat_samp1_all = F.normalize(torch.cat(feat_samp1_all, dim=0), p=2, dim=1)
+            feat_samp2_all = F.normalize(torch.cat(feat_samp2_all, dim=0), p=2, dim=1)
+
+            similarity_matrix = torch.mm(feat_samp1_all, feat_samp2_all.t())  # Cosine similarity
+        
+            dist_matrix_list.append(dist_matrix)
+            similarity_matrix_list.append(similarity_matrix)
+
+        return similarity_matrix_list, dist_matrix_list, target_matrix_list
+
+    def __call__(self, preds_key, preds_ref, features, batch):
+        """Calculate and return the combined loss for detection and segmentation."""
+        loss = torch.zeros(5, device=self.device)  # box, seg, cls, dfl, reid
+
+        def unpack_preds(preds):
+            if preds is None:
+                return None, None, None
+            return preds if len(preds) == 3 else preds[1]
+
+        key_feats, key_pred_masks, key_proto = unpack_preds(preds_key)
+        ref_feats, ref_pred_masks, ref_proto = unpack_preds(preds_ref)
+
+        batch_size, _, mask_h, mask_w = key_proto.shape
+        key_pred_distri, key_pred_scores = (
+            torch.cat([x.view(key_feats[0].shape[0], self.no, -1) for x in key_feats], dim=2).split((self.reg_max * 4, self.nc), dim=1)
+            if key_feats is not None else (None, None)
+        )
+
+        ref_pred_distri, ref_pred_scores = (
+            torch.cat([x.view(ref_feats[0].shape[0], self.no, -1) for x in ref_feats], dim=2).split((self.reg_max * 4, self.nc), dim=1)
+            if ref_feats is not None else (None, None)
+        )
+
+        key_pred_scores = key_pred_scores.permute(0, 2, 1).contiguous() if key_pred_scores is not None else None
+        key_pred_distri = key_pred_distri.permute(0, 2, 1).contiguous() if key_pred_distri is not None else None
+        ref_pred_scores = ref_pred_scores.permute(0, 2, 1).contiguous() if ref_pred_scores is not None else None
+        ref_pred_distri = ref_pred_distri.permute(0, 2, 1).contiguous() if ref_pred_distri is not None else None
+        
+        key_pred_masks = key_pred_masks.permute(0, 2, 1).contiguous() if key_pred_masks is not None else None
+        ref_pred_masks = ref_pred_masks.permute(0, 2, 1).contiguous() if ref_pred_masks is not None else None
+
+        dtype = key_pred_scores.dtype
+        batch_size = key_pred_scores.shape[0]
+        imgsz = torch.tensor(key_feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
+        anchor_points, stride_tensor = make_anchors(key_feats, self.stride, 0.5)
+
+        # Targets Key Image
+        key_targets = torch.cat((batch["key_frames"]["batch_idx"].view(-1, 1), batch["key_frames"]["cls"].view(-1, 1), batch["key_frames"]["bboxes"]), 1)
+        key_batch_idx = key_targets[:, 0].long()
+        key_targets = self.preprocess(key_targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+        key_gt_labels, key_gt_bboxes = key_targets.split((1, 4), 2)  # cls, xyxy
+        key_mask_gt = key_gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+
+        # Pboxes Key
+        key_pred_bboxes = self.bbox_decode(anchor_points, key_pred_distri)  # xyxy, (b, h*w, 4)
+
+        # Targets Reference Image
+        if self.is_train == True:
+            ref_targets = torch.cat((batch["ref_frames"]["batch_idx"].view(-1, 1), batch["ref_frames"]["cls"].view(-1, 1), batch["ref_frames"]["bboxes"]), 1)
+            ref_batch_idx = ref_targets[:, 0].long()
+            ref_targets = self.preprocess(ref_targets.to(self.device), batch_size, scale_tensor=imgsz[[1, 0, 1, 0]])
+            ref_gt_labels, ref_gt_bboxes = ref_targets.split((1, 4), 2)  # cls, xyxy
+            ref_mask_gt = ref_gt_bboxes.sum(2, keepdim=True).gt_(0.0)
+
+            # Pboxes Ref
+            ref_pred_bboxes = self.bbox_decode(anchor_points, ref_pred_distri)  # xyxy, (b, h*w, 4)
+
+        # For other losses -> Perform on key image
+        _, target_bboxes, target_scores, fg_mask, target_gt_idx = self.assigner(
+            # pred_scores.detach().sigmoid() * 0.8 + dfl_conf.unsqueeze(-1) * 0.2,
+            key_pred_scores.detach().sigmoid(),
+            (key_pred_bboxes.detach() * stride_tensor).type(key_gt_bboxes.dtype),
+            anchor_points * stride_tensor,
+            key_gt_labels,
+            key_gt_bboxes,
+            key_mask_gt,
+        )
+
+        target_scores_sum = max(target_scores.sum(), 1)
+
+        # Cls loss
+        # loss[1] = self.varifocal_loss(pred_scores, target_scores, target_labels) / target_scores_sum  # VFL way
+        loss[2] = self.bce(key_pred_scores, target_scores.to(dtype)).sum() / target_scores_sum
+
+        # Bbox loss
+        if fg_mask.sum():
+            #target_bboxes /= stride_tensor
+            loss[0], loss[3] = self.bbox_loss(
+                key_pred_distri, key_pred_bboxes, anchor_points, target_bboxes / stride_tensor, target_scores, target_scores_sum, fg_mask
+            )
+
+            # Masks loss
+            masks = batch["key_frames"]["masks"].to(self.device).float()
+            if tuple(masks.shape[-2:]) != (mask_h, mask_w):  # downsample
+                masks = F.interpolate(masks[None], (mask_h, mask_w), mode="nearest")[0]
+
+            loss[1] = self.calculate_segmentation_loss(
+                fg_mask, masks, target_gt_idx, target_bboxes, key_batch_idx, key_proto, key_pred_masks, imgsz, self.overlap
+            )
+
+        # WARNING: lines below prevent Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
+        else:
+            loss[1] += (key_proto * 0).sum() + (key_pred_masks * 0).sum()  # inf sums may lead to nan loss
+
+        # Sampling and target construction for REID
+        key_samples = self.sampler(batch, key_gt_bboxes, key_batch_idx, key_pred_bboxes, stride_tensor, 'key')
+        if self.is_train == True:            
+            ref_samples = self.sampler(batch, ref_gt_bboxes, ref_batch_idx, ref_pred_bboxes, stride_tensor, 'ref')
+            cosine_similarity, distance, asso_target = self.get_matchings(key_samples, ref_samples, features, key_pred_masks, key_proto, key_pred_bboxes, ref_pred_masks, ref_proto, ref_pred_bboxes, stride_tensor)
+        else:
+            cosine_similarity, distance, asso_target = self.get_matchings(key_samples, key_samples, features, key_pred_masks, key_proto, key_pred_bboxes, key_pred_masks, key_proto, key_pred_bboxes, stride_tensor)
+
+        # Calcul Reid loss -> L2 aux + Cross-Entropy
+        l2 = self.l2aux(cosine_similarity, asso_target)
+        eloss = self.embd_loss(distance, asso_target)
+
+        # Assemble losses
+        loss[0] *= self.hyp.box  # box gain
+        loss[1] *= self.hyp.box  # seg gain
+        loss[2] *= self.hyp.cls  # cls gain
+        loss[3] *= self.hyp.dfl  # dfl gain
+        loss[4] = l2 + eloss
+
+        return loss * batch_size, loss.detach()  # loss(box, cls, dfl)
+
+    @staticmethod
+    def single_mask_loss(
+        gt_mask: torch.Tensor, pred: torch.Tensor, proto: torch.Tensor, xyxy: torch.Tensor, area: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Compute the instance segmentation loss for a single image.
+
+        Args:
+            gt_mask (torch.Tensor): Ground truth mask of shape (n, H, W), where n is the number of objects.
+            pred (torch.Tensor): Predicted mask coefficients of shape (n, 32).
+            proto (torch.Tensor): Prototype masks of shape (32, H, W).
+            xyxy (torch.Tensor): Ground truth bounding boxes in xyxy format, normalized to [0, 1], of shape (n, 4).
+            area (torch.Tensor): Area of each ground truth bounding box of shape (n,).
+
+        Returns:
+            (torch.Tensor): The calculated mask loss for a single image.
+
+        Notes:
+            The function uses the equation pred_mask = torch.einsum('in,nhw->ihw', pred, proto) to produce the
+            predicted masks from the prototype masks and predicted mask coefficients.
+        """
+        pred_mask = torch.einsum("in,nhw->ihw", pred, proto)  # (n, 32) @ (32, 80, 80) -> (n, 80, 80)
+        loss = F.binary_cross_entropy_with_logits(pred_mask, gt_mask, reduction="none")
+        return (crop_mask(loss, xyxy).mean(dim=(1, 2)) / area).sum()
+
+    def calculate_segmentation_loss(
+        self,
+        fg_mask: torch.Tensor,
+        masks: torch.Tensor,
+        target_gt_idx: torch.Tensor,
+        target_bboxes: torch.Tensor,
+        batch_idx: torch.Tensor,
+        proto: torch.Tensor,
+        pred_masks: torch.Tensor,
+        imgsz: torch.Tensor,
+        overlap: bool,
+    ) -> torch.Tensor:
+        """
+        Calculate the loss for instance segmentation.
+
+        Args:
+            fg_mask (torch.Tensor): A binary tensor of shape (BS, N_anchors) indicating which anchors are positive.
+            masks (torch.Tensor): Ground truth masks of shape (BS, H, W) if `overlap` is False, otherwise (BS, ?, H, W).
+            target_gt_idx (torch.Tensor): Indexes of ground truth objects for each anchor of shape (BS, N_anchors).
+            target_bboxes (torch.Tensor): Ground truth bounding boxes for each anchor of shape (BS, N_anchors, 4).
+            batch_idx (torch.Tensor): Batch indices of shape (N_labels_in_batch, 1).
+            proto (torch.Tensor): Prototype masks of shape (BS, 32, H, W).
+            pred_masks (torch.Tensor): Predicted masks for each anchor of shape (BS, N_anchors, 32).
+            imgsz (torch.Tensor): Size of the input image as a tensor of shape (2), i.e., (H, W).
+            overlap (bool): Whether the masks in `masks` tensor overlap.
+
+        Returns:
+            (torch.Tensor): The calculated loss for instance segmentation.
+
+        Notes:
+            The batch loss can be computed for improved speed at higher memory usage.
+            For example, pred_mask can be computed as follows:
+                pred_mask = torch.einsum('in,nhw->ihw', pred, proto)  # (i, 32) @ (32, 160, 160) -> (i, 160, 160)
+        """
+        _, _, mask_h, mask_w = proto.shape
+        loss = 0
+
+        # Normalize to 0-1
+        target_bboxes_normalized = target_bboxes / imgsz[[1, 0, 1, 0]]
+
+        # Areas of target bboxes
+        marea = xyxy2xywh(target_bboxes_normalized)[..., 2:].prod(2)
+
+        # Normalize to mask size
+        mxyxy = target_bboxes_normalized * torch.tensor([mask_w, mask_h, mask_w, mask_h], device=proto.device)
+
+        for i, single_i in enumerate(zip(fg_mask, target_gt_idx, pred_masks, proto, mxyxy, marea, masks)):
+            fg_mask_i, target_gt_idx_i, pred_masks_i, proto_i, mxyxy_i, marea_i, masks_i = single_i
+            if fg_mask_i.any():
+                mask_idx = target_gt_idx_i[fg_mask_i]
+                if overlap:
+                    gt_mask = masks_i == (mask_idx + 1).view(-1, 1, 1)
+                    gt_mask = gt_mask.float()
+                else:
+                    gt_mask = masks[batch_idx.view(-1) == i][mask_idx]
+
+                loss += self.single_mask_loss(
+                    gt_mask, pred_masks_i[fg_mask_i], proto_i, mxyxy_i[fg_mask_i], marea_i[fg_mask_i]
+                )
+
+            # WARNING: lines below prevents Multi-GPU DDP 'unused gradient' PyTorch errors, do not remove
+            else:
+                loss += (proto * 0).sum() + (pred_masks * 0).sum()  # inf sums may lead to nan loss
+
+        return loss / fg_mask.sum()    
 
 class v8PoseLoss(v8DetectionLoss):
     """Criterion class for computing training losses for YOLOv8 pose estimation."""

@@ -9,6 +9,8 @@ from pathlib import Path
 
 import torch
 import torch.nn as nn
+import cv2 
+import numpy as np
 
 from ultralytics.nn.autobackend import check_class_names
 from ultralytics.nn.modules import (
@@ -79,6 +81,7 @@ from ultralytics.utils.loss import (
     v8OBBLoss,
     v8PoseLoss,
     v8SegmentationLoss,
+    v8SegmentationReidLoss,
 )
 from ultralytics.utils.ops import make_divisible
 from ultralytics.utils.plotting import feature_visualization
@@ -1189,8 +1192,82 @@ class DetectionModel_MultiView(DetectionModel):
         """Initialize the loss criterion for the DetectionModel."""
         return v8DetectionReidLoss(self)
 
-# Functions ------------------------------------------------------------------------------------------------------------
+class SegmentationModel_MultiView(SegmentationModel):
+    def __init__(self, cfg="yolo11n-seg.yaml", ch=3, nc=None, verbose=True):
+        """
+        Initialize the YOLO detection model with the given config and parameters.
 
+        Args:
+            cfg (str | dict): Model configuration file path or dictionary.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes.
+            verbose (bool): Whether to display model information.
+        """
+        super().__init__(cfg=cfg)
+        print("Initialisation Segment + reid Model")
+        self.is_train = None
+        self.featmap_idxs = None
+        for layer in reversed(self.yaml.get("head", [])):
+            if isinstance(layer[0], list) and isinstance(layer[2], str) and "Segment" in layer[2]:
+                self.featmap_idxs = layer[0]
+                break
+
+        if self.featmap_idxs is None:
+            raise ValueError("Segment layer with required arguments not found in YAML head.")
+
+    def loss(self, batch, preds=None, features=None):
+        if getattr(self, "criterion", None) is None:
+            self.criterion = self.init_criterion()
+        if self.is_train == True:
+            self.criterion.is_train = True
+            img = torch.cat([batch['key_frames']['img'], batch['ref_frames']['img']], dim=0)
+            preds, feature_map = self.forward(img, embed=self.featmap_idxs) if preds is None else preds
+
+            B = batch['key_frames']['img'].shape[0]
+            preds_key = ([p[:B] for p in preds[0]], preds[1][:B], preds[2][:B])
+            preds_ref = ([p[B:] for p in preds[0]], preds[1][B:], preds[2][B:])
+
+        if self.is_train == False:
+            self.criterion.is_train = False
+
+            preds, feature_map = self.forward(batch['key_frames']['img'], embed=self.featmap_idxs) if preds is None else preds, features
+
+            B = batch['key_frames']['img'].shape[0]
+            preds_key = ([p[:B] for p in preds[1][0]], preds[1][1][:B], preds[1][2][:B])
+            preds_ref = None
+        
+        return self.criterion(preds_key, preds_ref, feature_map, batch)
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        y, dt, embeddings = [], [], []  # outputs
+        feature_maps = [] 
+        for m in self.model:
+            if m.f != -1:  # if not from previous layer
+                x = y[m.f] if isinstance(m.f, int) else [x if j == -1 else y[j] for j in m.f]  # from earlier layers
+            if profile:
+                self._profile_one_layer(m, x, dt)
+
+            x = m(x)  # run
+            y.append(x if m.i in self.save else None)  # save output
+
+            if embed and m.i in embed:
+                #print(f"Layer {m.i}: shape={x.shape}")
+                feature_maps.append(x)
+
+            if visualize:
+                feature_visualization(x, m.type, m.i, save_dir=visualize)
+
+        if embed==None:
+            return x
+        else:
+            for m in self.model:
+                if isinstance(m, Segment):
+                    feature_map = m.proto.upsample(m.proto.cv1(feature_maps[0]))
+            return x, feature_map
+    
+    def init_criterion(self):
+        """Initialize the loss criterion for the DetectionModel."""
+        return v8SegmentationReidLoss(self)
 
 @contextlib.contextmanager
 def temporary_modules(modules=None, attributes=None):

@@ -14,6 +14,7 @@ from ultralytics.nn.tasks import (
     DetectionModel,
     SegmentationModel,
     DetectionModel_MultiView,
+    SegmentationModel_MultiView,
 )
 
 
@@ -95,6 +96,12 @@ class YOLOManitou_MultiCam(Model):
                     "validator": yolo_manitou.detect_multiCam.ManitouValidator_MultiCam,
                     "predictor": yolo_manitou.detect_multiCam.ManitouPredictor_MultiCam,
                 },
+                "segment":{
+                "model": SegmentationModel_MultiView,
+                "trainer": yolo_manitou.segment_multiCam.ManitouSegmentationTrainer_MultiCam,
+                "validator": yolo_manitou.segment_multiCam.ManitouSegmentationValidator_MultiCam,
+                "predictor": yolo_manitou.segment_multiCam.ManitouSegmentationPredictor_MultiCam,
+            }
         }
         
     def predict(

@@ -26,6 +26,15 @@ class ManitouPredictor_MultiCam_ReID(ManitouPredictor):
 
     def __call__(self, data_cfg=None, model=None, *args, **kwargs):
         return list(self.stream_inference(data_cfg, model, *args, **kwargs))  # merge list of Result into one
+    
+    def inference(self, im, *args, **kwargs):
+        """Run inference on a given image using the specified model and arguments."""
+        visualize = (
+            increment_path(self.save_dir / Path(self.batch[0][0]).stem, mkdir=True)
+            if self.args.visualize and (not self.source_type.tensor)
+            else False
+        )
+        return self.model(im, augment=self.args.augment, visualize=visualize, embed=self.model.model.featmap_idxs, *args, **kwargs)
 
     @smart_inference_mode()
     def stream_inference(self, data_cfg, model=None, *args, **kwargs):
@@ -332,7 +341,10 @@ class ManitouPredictor_MultiCam_ReID(ManitouPredictor):
             orig_imgs = ops.convert_torch2numpy_batch(orig_imgs)
 
         if save_feats:
-            obj_feats = self.get_obj_feats(self._feats, preds[1])
+            #obj_feats = self.get_obj_feats(self._feats, preds[1])
+            obj_feats = [
+                self._feats[j][preds[1][j]] for j in range(len(self._feats))
+            ]           
             preds = preds[0]
 
         results = self.construct_results(preds, orig_imgs, paths)

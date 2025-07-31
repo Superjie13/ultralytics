@@ -86,7 +86,8 @@ def process_mask(protos, masks_in, bboxes, shape, pre_crop_cfg, upsample=False):
 
     masks = ops.crop_mask(masks, downsampled_bboxes)  # CHW
     if upsample:
-        masks = F.interpolate(masks[None], shape, mode="nearest", align_corners=False)[0]  # CHW
+        #masks = F.interpolate(masks[None], shape, mode="nearest", align_corners=False)[0]  # CHW
+        masks = F.interpolate(masks[None], shape, mode="nearest")[0]  # CHW # False doesn't exist for F.interpolate(..., align_corners=)
     masks = invert_manitou_resize_crop_masks(masks, pre_crop_cfg)
     return masks.gt_(0.0)
 

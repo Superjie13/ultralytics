@@ -1,11 +1,12 @@
 from ultralytics import YOLOManitou_MultiCam
 
 project = "runs/manitou_reid_remap"
-data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou.yaml"
-# weights = "/root/workspace/ultralytics/tools/runs/manitou_remap/train/weights/best.pt"
-weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train2/weights/last.pt"
+#data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou.yaml"
+data_cfg = "/root/workspace/ultralytics/ultralytics/cfg/datasets/manitou.yaml" 
+weights = "/root/workspace/ultralytics/tools/runs/manitou_reid_remap/train3/weights/best.pt"
+#weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train2/weights/last.pt"
 
-device = [1]
+device = [0]
 batch_size = 8
 imgsz = (1552, 1936)  # (height, width)
 
@@ -42,5 +43,5 @@ pre_crop_cfg["scale"] = crop_size[1] / imgsz[1]
 pre_crop_cfg["crop_tlbr"] = tlbr
 pre_crop_cfg["crop_size"] = crop_size
 
-model = YOLOManitou_MultiCam(weights)
+model = YOLOManitou_MultiCam(weights, task="reid")
 metrics = model.val(data=data_cfg, imgsz=imgsz, batch=batch_size, device=device, pre_crop_cfg=pre_crop_cfg)

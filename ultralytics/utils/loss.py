@@ -415,7 +415,7 @@ class v8DetectionReidLoss:
             # pred_dist = (pred_dist.view(b, a, c // 4, 4).softmax(2) * self.proj.type(pred_dist.dtype).view(1, 1, -1, 1)).sum(2)
         return dist2bbox(pred_dist, anchor_points, xywh=False)
 
-    def sampler(self, batch, gt_bboxes, batch_idx, preds, strides, im="key"):
+    """def sampler(self, batch, gt_bboxes, batch_idx, preds, strides, im="key"):
         B4, N = preds.shape[:2]  # B4 = Batch_size * 4
         B = B4 // self.num_cam
         preds = preds * strides
@@ -529,6 +529,109 @@ class v8DetectionReidLoss:
                     all_samples = torch.cat([pos_samples, neg_samples], dim=0)
                     sample_list.append(all_samples)
 
+            batch_samples.append(torch.cat(sample_list, dim=0))
+
+        return batch_samples"""
+
+    def sampler(self, batch, gt_bboxes, batch_idx, preds, strides, im='key'):
+        B4, N = preds.shape[:2]  # B4 = Batch_size * 4
+        B = B4 // self.num_cam
+        preds = preds*strides
+        batch_samples = []
+        
+        for b in range(B):
+            sample_list = []
+            for cam_id in range(self.num_cam):
+                idx = b*self.num_cam + cam_id
+                pred = preds[idx]
+                gt_mask = (batch_idx == idx)
+        
+                gt_box = gt_bboxes[idx].to(self.device)
+                if im=='key':
+                    gt_ids = (torch.cat(batch['key_frames']['ins_ids'], dim=0).squeeze(1).long().to(self.device)[batch_idx == idx]
+                            if any(ins.numel() > 0 for ins in batch['key_frames']['ins_ids'])
+                            else torch.empty(0, dtype=torch.long, device=self.device))
+                        
+                    if gt_box.numel() == 0:
+                        positive_idxs = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+                        sample_list.append(positive_idxs)
+                        continue
+
+                    ious = bbox_iou(pred.unsqueeze(1), gt_box.unsqueeze(0),xywh=False,CIoU=True)[:, :, 0]  # (N, G)
+
+                    mask = ious > self.iou_thresh1
+                    ious_thresh = torch.where(mask, ious, torch.tensor(-1.0, device=ious.device))
+
+                    max_ious, gt_indices = ious_thresh.max(dim=1)
+                    pred_indices = torch.nonzero(max_ious > -1, as_tuple=False).squeeze(1)
+
+                    if pred_indices.numel() == 0:
+                        positive_idxs = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+                    else:
+                        positive_idxs = torch.stack([pred_indices, gt_ids[gt_indices[pred_indices]]], dim=1)  
+
+                        # Ajustement à nb_samples
+                        n_pos = positive_idxs.shape[0]
+                        if n_pos > self.nb_samples:
+                            indices = torch.randperm(n_pos, device=self.device)[:self.nb_samples]
+                            positive_idxs = positive_idxs[indices]
+                        elif n_pos < self.nb_samples:
+                            pad = torch.full((self.nb_samples - n_pos, 2), -1, dtype=torch.long, device=self.device)
+                            positive_idxs = torch.cat([positive_idxs, pad], dim=0)                        
+                    sample_list.append(positive_idxs)
+                    
+                elif im=='ref':
+                    gt_ids = (torch.cat(batch['ref_frames']['ins_ids'], dim=0).squeeze(1).long().to(self.device)[batch_idx == idx]
+                            if any(ins.numel() > 0 for ins in batch['ref_frames']['ins_ids'])
+                            else torch.empty(0, dtype=torch.long, device=self.device))
+
+                    ious = bbox_iou(pred.unsqueeze(1), gt_box.unsqueeze(0), xywh=False, CIoU=True)[:, :, 0]                
+
+                    if gt_box.numel() == 0:
+                        num_select = self.nb_samples
+                        neg_indices = torch.randperm(pred.shape[0], device=self.device)
+                        neg_indices = neg_indices[:num_select] if pred.shape[0] >= num_select else torch.cat([
+                            neg_indices, torch.full((num_select - pred.shape[0],), -1, device=device, dtype=torch.long)
+                        ])
+                        neg_samples = torch.stack([neg_indices, torch.full_like(neg_indices, -1)], dim=1)
+                        pos_samples = torch.full((num_select, 2), -1, dtype=torch.long, device=self.device)  # pour les positifs absents
+                        all_samples = torch.cat([pos_samples, neg_samples], dim=0)  # (2*num_select, 3)
+                        sample_list.append(all_samples)
+                        continue
+
+                    max_ious, gt_indices = ious.max(dim=1)
+                    pos_mask = max_ious > self.iou_thresh1
+                    pos_indices = torch.nonzero(pos_mask, as_tuple=False).squeeze(1)
+
+                    neg_mask = (ious < self.iou_thresh2).all(dim=1)
+                    neg_indices = torch.nonzero(neg_mask, as_tuple=False).squeeze(1)
+
+                    def sample_indices(src, k):
+                        if src.numel() == 0:
+                            return torch.full((k,), -1, dtype=torch.long, device=self.device)
+                        if src.numel() >= k:
+                            return src[torch.randperm(src.numel(), device=self.device)[:k]]
+                        else:
+                            pad = torch.full((k - src.numel(),), -1, dtype=torch.long, device=self.device)
+                            return torch.cat([src, pad], dim=0)
+
+                    pos_indices = sample_indices(pos_indices, self.nb_samples)
+                    neg_indices = sample_indices(neg_indices, self.nb_samples)
+
+                    pos_samples = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+                    neg_samples = torch.full((self.nb_samples, 2), -1, dtype=torch.long, device=self.device)
+
+                    valid_pos = pos_indices != -1
+                    if valid_pos.any():
+                        pos_samples[valid_pos, 0] = pos_indices[valid_pos]
+                        pos_samples[valid_pos, 1] = gt_ids[gt_indices[pos_indices[valid_pos]]]
+
+                    valid_neg = neg_indices != -1
+                    neg_samples[valid_neg, 0] = neg_indices[valid_neg]
+
+                    all_samples = torch.cat([pos_samples, neg_samples], dim=0)
+                    sample_list.append(all_samples)
+                    
             batch_samples.append(torch.cat(sample_list, dim=0))
 
         return batch_samples
@@ -1004,6 +1107,7 @@ class v8SegmentationReidLoss(v8DetectionReidLoss):
         """Initialize the v8SegmentationLoss class with model parameters and mask overlap setting."""
         super().__init__(model)
         self.overlap = model.args.overlap_mask
+        self.nb_samples = 80
 
     def sampler(self, batch, gt_bboxes, batch_idx, preds, strides, im='key'):
         B4, N = preds.shape[:2]  # B4 = Batch_size * 4
@@ -1150,7 +1254,6 @@ class v8SegmentationReidLoss(v8DetectionReidLoss):
             target_matrix_list.append(target_matrix)
 
             feat_samp1_all, feat_samp2_all = [], []
-
             for cam in range(nb_cams):
                 # Index range par caméra
                 samp1_slice = slice(cam * self.nb_samples, (cam + 1) * self.nb_samples)

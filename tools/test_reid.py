@@ -18,8 +18,10 @@ def draw_results_on_image(img, boxes, confs, global_indices):
     return img
 
 
-data_root = "/home/shu/Documents/PROTECH/ultralytics/datasets/manitou"
-weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train/weights/last.pt"
+#data_root = "/home/shu/Documents/PROTECH/ultralytics/datasets/manitou"
+#weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train/weights/last.pt"
+data_root = "/datasets/dataset/manitou"
+weights = "/root/workspace/ultralytics/tools/runs/manitou_reid_remap/train3/weights/best.pt"
 device = [1]
 imgsz = (1552, 1936)  # (height, width)
 
@@ -57,7 +59,8 @@ pre_crop_cfg["crop_tlbr"] = tlbr
 pre_crop_cfg["crop_size"] = crop_size
 
 model = YOLOManitou_MultiCam(weights)
-calib_params = get_manitou_calibrations("/home/shu/Documents/PROTECH/ultralytics/datasets/manitou/calibration/")
+#calib_params = get_manitou_calibrations("/home/shu/Documents/PROTECH/ultralytics/datasets/manitou/calibration/")
+calib_params = get_manitou_calibrations("/datasets/dataset/manitou/calibration/")
 
 rosbag_name = "rosbag2_2025_02_17-14_29_31"
 frame = "000076"
@@ -111,7 +114,6 @@ for cam_idx, res in enumerate(results[0][0]):
     features_list.append(features)
 
 features_tensor = torch.tensor(np.concatenate(features_list, axis=0), dtype=torch.float32)
-
 features_norm = F.normalize(features_tensor, p=2, dim=1)
 similarity_matrix = torch.mm(features_norm, features_norm.t())
 
@@ -143,8 +145,8 @@ top_matches = torch.argmax(similarity_matrix, dim=1).tolist()
 annotated_images = [img.copy() for img in processed_images]
 for i, (box, conf, img_idx, match_idx) in enumerate(zip(all_boxes, all_confs, all_img_indices, top_matches)):
     x1, y1, x2, y2 = map(int, box)
-    # label = f"ID: {i+1} -> ReID: {match_idx+1}"
-    label = f"ID: {i + 1}"
+    label = f"ID: {i+1} -> ReID: {match_idx+1}"
+    #label = f"ID: {i + 1}"
     cv2.rectangle(annotated_images[img_idx], (x1, y1), (x2, y2), (0, 255, 0), 2)
     cv2.putText(annotated_images[img_idx], label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 

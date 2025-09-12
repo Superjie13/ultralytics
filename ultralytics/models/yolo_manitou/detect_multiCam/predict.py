@@ -22,7 +22,8 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
     def __init__(self, cfg=DEFAULT_CFG, overrides=None, _callbacks=None):
         super().__init__(cfg, overrides, _callbacks)
         self.use_radar = self.args.use_radar
-        self.draw_radar = self.use_radar and self.args.draw_radar      
+        self.draw_radar = self.use_radar and self.args.draw_radar
+        self.run_model = self.args.run_det  # whether to run the model for inference, if False, only run callbacks
 
     def __call__(self, data_cfg=None, model=None, *args, **kwargs):
         return list(self.stream_inference(data_cfg, model, *args, **kwargs))  # merge list of Result into one
@@ -33,8 +34,8 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         Stream real-time inference on camera feed and save results to file.
 
         Args:
-            source (str | Path | List[str] | List[Path] | List[np.ndarray] | np.ndarray | torch.Tensor | None):
-                Source for inference.
+            data_cfg (dict): Configuration dictionary containing data path and calibration parameters.
+            run_model (bool): Whether to run the model for inference. If False, only run callbacks.
             model (str | Path | torch.nn.Module | None): Model for inference.
             *args (Any): Additional arguments for the inference method.
             **kwargs (Any): Additional keyword arguments for the inference method.
@@ -75,21 +76,34 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
             for self.batch in self.dataset:
                 self.run_callbacks("on_predict_batch_start")
                 paths, _batch, s = self.batch
-
+            
                 # Preprocess
                 with profilers[0]:
-                    im = self.preprocess(_batch)
+                    if self.run_model:
+                        im = self.preprocess(_batch)
 
                 # Inference
                 with profilers[1]:
-                    preds = self.inference(im, *args, **kwargs)
-                    if self.args.embed:
-                        yield from [preds] if isinstance(preds, torch.Tensor) else preds  # yield embedding tensors
-                        continue
+                    if self.run_model:
+                        preds = self.inference(im, *args, **kwargs)
+                        if self.args.embed:
+                            yield from [preds] if isinstance(preds, torch.Tensor) else preds  # yield embedding tensors
+                            continue
 
                 # Postprocess
                 with profilers[2]:
-                    self.results = self.postprocess(preds, _batch)
+                    if self.run_model:
+                        self.results = self.postprocess(preds, _batch)
+                    else:
+                        # Build results from detection results without running model inference
+                        orig_imgs = [_batch[i]["orig_images"][f"cam{j}"] for i in range(len(_batch)) for j in range(1, 5)]  # get original images from batch
+                        paths_list = [self.batch[0][i][f"cam{j}"] for i in range(len(self.batch[0])) for j in range(1, 5)]  # get paths from batch
+                        cam_det_res = [_batch[i][f"cam{j}_det_res"] for i in range(len(_batch)) for j in range(1, 5)]  # get detection results from batch
+                        res_list = []
+                        for orig_img, img_path, det_res in zip(orig_imgs, paths_list, cam_det_res):
+                            res = self.prepare_manitou_det_res(orig_img, img_path, det_res)
+                            res_list.append(res)
+                        self.results = {"cameras": res_list, "radars": _batch[0]["radar"]}
                 
                 with profilers[3]:
                     self.run_callbacks("on_predict_postprocess_end")
@@ -119,10 +133,15 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
         # Print final results
         if self.args.verbose and self.seen:
             t = tuple(x.t / self.seen * 1e3 for x in profilers)  # speeds per image
-            LOGGER.info(
-                f"Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess, %.1fms callbacks per image at shape "
-                f"{(min(self.args.batch, self.seen), getattr(self.model, 'ch', 3), *im.shape[2:])}" % t
-            )
+            if self.run_model:
+                LOGGER.info(
+                    f"Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess, %.1fms callbacks per image at shape "
+                    f"{(min(self.args.batch, self.seen), getattr(self.model, 'ch', 3), *im.shape[2:])}" % t
+                )
+            else:
+                LOGGER.info(
+                    f"Speed: %.1fms preprocess, %.1fms inference, %.1fms postprocess, %.1fms callbacks using pre-computed detections" % t
+                )
         if self.args.save or self.args.save_txt or self.args.save_crop:
             nl = len(list(self.save_dir.glob("labels/*.txt")))  # number of labels
             s = f"\n{nl} label{'s' * (nl > 1)} saved to {self.save_dir / 'labels'}" if self.args.save_txt else ""
@@ -276,11 +295,14 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
 
         radar_accumulation = data_cfg.pop("radar_accumulation", 3)
         
-        self.dataset = LoadManitouImagesAndRadar(data_cfg=data_cfg,
-                                                 radar_accumulation=radar_accumulation,
-                                                 batch=1,
-                                                 pre_transform=self.get_pre_transform(),
-                                                 use_radar=self.use_radar)
+        self.dataset = LoadManitouImagesAndRadar(
+            data_cfg=data_cfg,
+            radar_accumulation=radar_accumulation,
+            batch=1,
+            pre_transform=self.get_pre_transform(),
+            use_radar=self.use_radar,
+            load_det_results=not self.run_model,
+        )
 
 
     def postprocess(self, preds, _batch):
@@ -356,7 +378,29 @@ class ManitouPredictor_MultiCam(ManitouPredictor):
             res_list.append(ManitouResults(orig_img, path=img_path, names=self.model.names, boxes=pred[:, :6]))
     
         return res_list
-    
+
+    def prepare_manitou_det_res(self, orig_img, img_path, det_res):
+        """
+        Prepare Manitou detection results from the loaded detection results.
+        Args:
+            det_res (dict): A dictionary containing detection results with keys 'boxes', 'scores', 'classes', and optionally 'features'.
+        Returns:
+            ManitouResults: A ManitouResults object containing the detection results.
+        """
+        boxes = det_res['boxes']
+        scores = det_res['scores']
+        classes = det_res['classes']
+        feats = det_res['features']
+        if len(boxes) == 0:
+            det_tensor = torch.zeros((0, 6 + (feats.shape[1] if feats is not None else 0)), device=self.device).float()
+        else:
+            det_tensor = torch.tensor(np.hstack((boxes, scores[:, None], classes[:, None])), device=self.device).float()
+        if feats is not None:
+            feats = torch.tensor(feats, device=self.device).float()
+        result = ManitouResults(orig_img, path=img_path, names=self.model.names, boxes=det_tensor)
+        result.feats = feats
+        return result  
+        
     def write_results(self, i, p, batch, s):
         """
         Write inference results to a file or directory.

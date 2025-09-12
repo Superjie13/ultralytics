@@ -12,6 +12,8 @@ from copy import copy
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.optim as optim
+
 from torch import distributed as dist
 
 from ultralytics.data import build_manitou_dataset, get_manitou_dataset
@@ -142,14 +144,28 @@ class ManitouTrainer_MultiCam_ReID(ManitouTrainer):
         self.accumulate = max(round(self.args.nbs / self.batch_size), 1)  # accumulate loss before optimizing
         weight_decay = self.args.weight_decay * self.batch_size * self.accumulate / self.args.nbs  # scale weight_decay
         iterations = math.ceil(len(self.train_loader.dataset) / max(self.batch_size, self.args.nbs)) * self.epochs
+        
+        # hard-coded multipliers for different parts of the model
+        proj_lr_mult = 1.0
+        proj_wd_mult = 1.0
+        pe_lr_mult = 5.0
+        pe_wd_mult = 1.0
+        
         self.optimizer = self.build_optimizer(
-            model=self.model,
-            name=self.args.optimizer,
-            lr=self.args.lr0,
-            momentum=self.args.momentum,
-            decay=weight_decay,
-            iterations=iterations,
-        )
+        model=self.model,
+        name=self.args.optimizer,
+        lr=self.args.lr0,
+        lr_mult=0.1,  # 原始学习率乘子用于预训练的参数
+        momentum=self.args.momentum,
+        decay=weight_decay,
+        iterations=iterations,
+        proj_lr_mult=proj_lr_mult,
+        proj_wd_mult=proj_wd_mult,
+        pe_lr_mult=pe_lr_mult,
+        pe_wd_mult=pe_wd_mult,
+        proj_key="featmap_projectors_reid",
+        pe_key="pe_fusers_reid",
+    )
         # Scheduler
         self._setup_scheduler()
         self.stopper, self.stop = EarlyStopping(patience=self.args.patience), False
@@ -361,6 +377,113 @@ class ManitouTrainer_MultiCam_ReID(ManitouTrainer):
         return build_manitou_dataset(
             self.args, ann_path, batch, self.data, mode=mode, rect=mode == "val", stride=gs, multi_cam=True
         )
+    
+    def build_optimizer(self, model, name="auto", lr=0.001, momentum=0.9, decay=1e-5, iterations=1e5,
+                        lr_mult=0.1,  # 原始学习率乘子用于预训练的参数
+                        # 新增：两类新模块的 LR / WD 乘子；可从 args 里读
+                        proj_lr_mult: float = 1.0, proj_wd_mult: float = 1.0,
+                        pe_lr_mult: float = 0.25,  pe_wd_mult: float = 1.0,
+                        proj_key: str = "featmap_projectors_reid",
+                        pe_key: str = "pe_fusers_reid"):
+        """
+        在原版基础上，新增对 `featmap_projectors_reid` 与 `pe_fusers_reid` 的独立 param groups（各自 decay/no_decay）。
+        保持 param_group[0] 为 bias 组，兼容 warmup 的 `j==0`。
+        """
+        # 原三桶： [decay, no_decay_weight, bias]
+        g = [], [], []
+        # 新桶： projectors & pos-enc
+        g_proj_decay, g_proj_no_decay = [], []
+        g_pe_decay,   g_pe_no_decay   = [], []
+
+        bn = tuple(v for k, v in nn.__dict__.items() if "Norm" in k)
+
+        if name == "auto":
+            LOGGER.info(
+                f"{colorstr('optimizer:')} 'optimizer=auto' found, "
+                f"ignoring 'lr0={self.args.lr0}' and 'momentum={self.args.momentum}' and "
+                f"determining best 'optimizer', 'lr0' and 'momentum' automatically... "
+            )
+            nc = self.data.get("nc", 10)
+            lr_fit = round(0.002 * 5 / (4 + nc), 6)
+            name, lr, momentum = ("SGD", 0.01, 0.9) if iterations > 10000 else ("AdamW", lr_fit, 0.9)
+            self.args.warmup_bias_lr = 0.0  # Adam 类不要给 bias 过高 warmup 起点
+
+        # —— 按名称分桶 —— #
+        for module_name, module in model.named_modules():
+            for param_name, param in module.named_parameters(recurse=False):
+                if not param.requires_grad:
+                    continue
+                fullname = f"{module_name}.{param_name}" if module_name else param_name
+                is_bias = ("bias" in fullname)
+                is_norm = isinstance(module, bn) or ("logit_scale" in fullname)
+
+                if proj_key in fullname:
+                    (g_proj_no_decay if (is_bias or is_norm) else g_proj_decay).append(param)
+                elif pe_key in fullname:
+                    (g_pe_no_decay if (is_bias or is_norm) else g_pe_decay).append(param)
+                else:
+                    if is_bias:
+                        g[2].append(param)       # bias（no decay）
+                    elif is_norm:
+                        g[1].append(param)       # Norm weight（no decay）
+                    else:
+                        g[0].append(param)       # 其他 weight（decay）
+
+        # —— 按原版逻辑创建优化器：param_group[0] = bias 组（兼容 warmup j==0）—— #
+        optimizers = {"Adam", "Adamax", "AdamW", "NAdam", "RAdam", "RMSProp", "SGD", "auto"}
+        name = {x.lower(): x for x in optimizers}.get(name.lower())
+        if name in {"Adam", "Adamax", "AdamW", "NAdam", "RAdam"}:
+            optimizer = getattr(optim, name, optim.Adam)(g[2], lr=lr * lr_mult, betas=(momentum, 0.999), weight_decay=0.0)
+        elif name == "RMSProp":
+            optimizer = optim.RMSprop(g[2], lr=lr * lr_mult, momentum=momentum)
+        elif name == "SGD":
+            optimizer = optim.SGD(g[2], lr=lr * lr_mult, momentum=momentum, nesterov=True)
+        else:
+            raise NotImplementedError(f"Optimizer '{name}' not supported.")
+
+        # 原三组顺序保持不变
+        optimizer.add_param_group({"params": g[0], "weight_decay": decay})   # decay
+        optimizer.add_param_group({"params": g[1], "weight_decay": 0.0})     # no-decay weights (Norm)
+
+        # —— 新增两类模块各自的 no_decay & decay 组（创建时就设定独立 lr/decay）—— #
+        if g_proj_no_decay:
+            optimizer.add_param_group({
+                "params": g_proj_no_decay,
+                "lr": lr * proj_lr_mult,
+                "weight_decay": 0.0,
+                "initial_lr": lr * proj_lr_mult,  # 便于 warmup/scheduler 读取
+            })
+        if g_proj_decay:
+            optimizer.add_param_group({
+                "params": g_proj_decay,
+                "lr": lr * proj_lr_mult,
+                "weight_decay": decay * proj_wd_mult,
+                "initial_lr": lr * proj_lr_mult,
+            })
+        if g_pe_no_decay:
+            optimizer.add_param_group({
+                "params": g_pe_no_decay,
+                "lr": lr * pe_lr_mult,
+                "weight_decay": 0.0,
+                "initial_lr": lr * pe_lr_mult,
+            })
+        if g_pe_decay:
+            optimizer.add_param_group({
+                "params": g_pe_decay,
+                "lr": lr * pe_lr_mult,
+                "weight_decay": decay * pe_wd_mult,
+                "initial_lr": lr * pe_lr_mult,
+            })
+
+        LOGGER.info(
+            f"{colorstr('optimizer:')} {type(optimizer).__name__}(base_lr={lr}, momentum={momentum}) groups -> "
+            f"base: bias={len(g[2])}, decay={len(g[0])}, no_decay={len(g[1])} | "
+            f"proj: decay={len(g_proj_decay)}, no_decay={len(g_proj_no_decay)} | "
+            f"pe: decay={len(g_pe_decay)}, no_decay={len(g_pe_no_decay)}"
+        )
+        return optimizer
+
+
 
     def preprocess_batch(self, batch):
         """
@@ -394,7 +517,7 @@ class ManitouTrainer_MultiCam_ReID(ManitouTrainer):
             (DetectionModel): YOLO detection model.
         """
         model = DetectionModel_MultiView_ReID(
-            cfg, nc=self.data["nc"], ch=self.data["channels"], verbose=verbose and RANK == -1
+            cfg, use_pos_enc=self.args.use_pos_enc, pre_crop_cfg=self.args.pre_crop_cfg, nc=self.data["nc"], ch=self.data["channels"], verbose=verbose and RANK == -1
         )
         if weights:
             model.load(weights)

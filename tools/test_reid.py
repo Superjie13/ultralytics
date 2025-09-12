@@ -19,8 +19,8 @@ def draw_results_on_image(img, boxes, confs, global_indices):
 
 
 data_root = "/home/shu/Documents/PROTECH/ultralytics/datasets/manitou"
-weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train/weights/last.pt"
-device = [1]
+weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap-NewPosEnc_V1/train8/weights/last.pt"
+device = "cpu"
 imgsz = (1552, 1936)  # (height, width)
 
 # Get pre_crop_cfg
@@ -62,6 +62,9 @@ calib_params = get_manitou_calibrations("/home/shu/Documents/PROTECH/ultralytics
 rosbag_name = "rosbag2_2025_02_17-14_29_31"
 frame = "000076"
 
+# rosbag_name = "rosbag2_2024_11_26-10_38_53"
+# frame = "000091"
+
 
 cam1_paths = os.path.join(data_root, f"key_frames/{rosbag_name}/camera1/{frame}.jpg")
 cam2_paths = os.path.join(data_root, f"key_frames/{rosbag_name}/camera2/{frame}.jpg")
@@ -82,7 +85,13 @@ data_cfg = {
     "radar_accumulation": 1,
 }
 
-results = model.predict(data_cfg=data_cfg, imgsz=imgsz, conf=0.25, max_det=100, pre_crop_cfg=pre_crop_cfg, save=False)
+results = model.predict(data_cfg=data_cfg, 
+                        imgsz=imgsz, 
+                        conf=0.3, 
+                        max_det=100, 
+                        pre_crop_cfg=pre_crop_cfg, 
+                        save=False, 
+                        device=device,)
 
 processed_images = []
 global_index = 1
@@ -98,6 +107,14 @@ for cam_idx, res in enumerate(results[0][0]):
     boxes = res.boxes.xyxy.cpu().numpy() if res.boxes is not None else []
     confs = res.boxes.conf.cpu().numpy() if res.boxes is not None else []
     features = res.feats.cpu().numpy() if res.feats is not None else []
+    classes = res.boxes.cls.cpu().numpy() if res.boxes is not None else []
+
+    mask = (classes == 1)
+    boxes = boxes[mask]
+    confs = confs[mask]
+    features = features[mask]
+    classes = classes[mask]
+
     n = len(boxes)
     indices = list(range(global_index, global_index + n))
     global_index += n
@@ -113,38 +130,52 @@ for cam_idx, res in enumerate(results[0][0]):
 features_tensor = torch.tensor(np.concatenate(features_list, axis=0), dtype=torch.float32)
 
 features_norm = F.normalize(features_tensor, p=2, dim=1)
+# # save features as numpy array
+np.save("features.npy", features_tensor.cpu().numpy())
 similarity_matrix = torch.mm(features_norm, features_norm.t())
 
 camera_idx_tensor = torch.tensor(camera_idx)
 same_cam_mask = camera_idx_tensor.unsqueeze(0) == camera_idx_tensor.unsqueeze(1)
 similarity_matrix[same_cam_mask] = 0
 
-print("Cosine similarity matrix :")
-for i in range(similarity_matrix.shape[0]):
-    line = [f"{similarity_matrix[i, j].item():.3f}" for j in range(similarity_matrix.shape[1])]
-    print(" ".join(line))
+similarity_matrix = similarity_matrix.cpu().numpy().astype(np.float64)
 
-# === Ajout : matrice de réidentification binaire ===
-thresh = 0.7
-reid_matrix = torch.zeros_like(similarity_matrix, dtype=torch.int)
+print(similarity_matrix)
+similarity_matrix[similarity_matrix < 0.5] = 0
+# print(similarity_matrix)
 
-for i in range(similarity_matrix.shape[0]):
-    max_sim, max_j = torch.max(similarity_matrix[i], dim=0)
-    if max_sim.item() > thresh:
-        reid_matrix[i, max_j] = 1
+from ultralytics.trackers.utils.bip_solver import GLPKSolver
 
-print("\nRe-identification binary matrix (thresh=0.7):")
-for i in range(reid_matrix.shape[0]):
-    line = [str(reid_matrix[i, j].item()) for j in range(reid_matrix.shape[1])]
-    print(" ".join(line))
+solver = GLPKSolver(min_affinity=0, max_affinity=1)
+clusters, sol_matrix = solver.solve(similarity_matrix, camera_idx=camera_idx, rtn_matrix=True)
+print("Clusters:", clusters)
+print("Solution Matrix:\n", sol_matrix)
 
-top_matches = torch.argmax(similarity_matrix, dim=1).tolist()
+# print("Cosine similarity matrix :")
+# for i in range(similarity_matrix.shape[0]):
+#     line = [f"{similarity_matrix[i, j].item():.3f}" for j in range(similarity_matrix.shape[1])]
+#     print(" ".join(line))
+
+# # === Ajout : matrice de réidentification binaire ===
+# thresh = 0.7
+# reid_matrix = torch.zeros_like(similarity_matrix, dtype=torch.int)
+
+# for i in range(similarity_matrix.shape[0]):
+#     max_sim, max_j = torch.max(similarity_matrix[i], dim=0)
+#     if max_sim.item() > thresh:
+#         reid_matrix[i, max_j] = 1
+
+# print("\nRe-identification binary matrix (thresh=0.7):")
+# for i in range(reid_matrix.shape[0]):
+#     line = [str(reid_matrix[i, j].item()) for j in range(reid_matrix.shape[1])]
+#     print(" ".join(line))
+
+# top_matches = torch.argmax(similarity_matrix, dim=1).tolist()
 
 annotated_images = [img.copy() for img in processed_images]
-for i, (box, conf, img_idx, match_idx) in enumerate(zip(all_boxes, all_confs, all_img_indices, top_matches)):
+for i, (box, conf, img_idx) in enumerate(zip(all_boxes, all_confs, all_img_indices)):
     x1, y1, x2, y2 = map(int, box)
-    # label = f"ID: {i+1} -> ReID: {match_idx+1}"
-    label = f"ID: {i + 1}"
+    label = f"{i + 1}"
     cv2.rectangle(annotated_images[img_idx], (x1, y1), (x2, y2), (0, 255, 0), 2)
     cv2.putText(annotated_images[img_idx], label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
 

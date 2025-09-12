@@ -1,12 +1,15 @@
+import numpy as np
+import cv2
 from ultralytics import YOLOManitou_MultiCam
 
-project = "runs/manitou_reid_remap"
+project = "runs/manitou_reid_remap-NewPosEnc_V1"
 data_cfg = "/home/shu/Documents/PROTECH/ultralytics/ultralytics/cfg/datasets/manitou.yaml"
-epochs = 120
+epochs = 80
 batch_size_per_gpu = 4
 device = [1,]  # list of GPU devices
 batch_size = batch_size_per_gpu * len(device)  # total batch size
 imgsz = (1552, 1936)  # (height, width)
+
 
 # Get pre_crop_cfg
 pre_crop_cfg = {
@@ -41,8 +44,9 @@ pre_crop_cfg["scale"] = crop_size[1] / imgsz[1]
 pre_crop_cfg["crop_tlbr"] = tlbr
 pre_crop_cfg["crop_size"] = crop_size
 
-# weights = "/datasets/dataset/best.pt"
+# weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_reid_remap/train37/weights/last.pt"
 weights = "/home/shu/Documents/PROTECH/ultralytics/runs/manitou_remap/train3/weights/best.pt"
+
 model = YOLOManitou_MultiCam(weights, task='reid')  # load a model
 results = model.train(
     data=data_cfg,
@@ -52,4 +56,6 @@ results = model.train(
     device=device,
     project=project,
     pre_crop_cfg=pre_crop_cfg,
+    use_pos_enc=False,  # use positional encoding
+    resume=False
 )  # train the model

@@ -6,6 +6,7 @@ import re
 import types
 from copy import deepcopy
 from pathlib import Path
+from typing import Optional, List, Dict
 
 import torch
 import torch.nn as nn
@@ -80,6 +81,8 @@ from ultralytics.utils.loss import (
     v8PoseLoss,
     v8SegmentationLoss,
 )
+from ultralytics.nn.modules.position_embedding import PosEncFuser, PosEncFuserV2, ReIDProjector
+from ultralytics.nn.modules.reid import ReIDPEBlock
 from ultralytics.utils.ops import make_divisible
 from ultralytics.utils.plotting import feature_visualization
 from ultralytics.utils.torch_utils import (
@@ -1084,7 +1087,7 @@ class DetectionModel_MultiView_ReID(DetectionModel):
     With Reid embeddings training.
     """
 
-    def __init__(self, cfg="yolo11n.yaml", ch=3, nc=None, verbose=True):
+    def __init__(self, cfg="yolo11n.yaml", ch=3, use_pos_enc=False, pre_crop_cfg=None, nc=None, verbose=True):
         """
         Initialize the YOLO detection model with the given config and parameters.
 
@@ -1094,11 +1097,12 @@ class DetectionModel_MultiView_ReID(DetectionModel):
             nc (int, optional): Number of classes.
             verbose (bool): Whether to display model information.
         """
-        super().__init__(cfg=cfg)
         print("Initialisation detect + reid Model")
         self.is_train = None
-
         self.featmap_idxs = None
+
+        super().__init__(cfg=cfg)
+
         for layer in reversed(self.yaml.get("head", [])):
             if isinstance(layer[0], list) and isinstance(layer[2], str) and "Detect" in layer[2]:
                 self.featmap_idxs = layer[0]
@@ -1106,11 +1110,11 @@ class DetectionModel_MultiView_ReID(DetectionModel):
         if self.featmap_idxs is None:
             raise ValueError("Detect layer with multiple input indices not found in YAML head.")
 
-        dummy_input = torch.zeros(1, ch, 256, 256)  # entrée factice
+        dummy_input = torch.zeros(1, ch, 256, 256)  # dummy input
         featmap_shapes = {}
         x = dummy_input
         outs = []
-        # Forward partiel pour récupérer les dimensions de sortie des couches 15, 18, 21
+        # Partial forward to retrieve output dimensions of layers 15, 18, 21
         for i, m in enumerate(self.model):
             if isinstance(m.f, int):
                 xi = outs[m.f] if m.f != -1 else x
@@ -1123,16 +1127,56 @@ class DetectionModel_MultiView_ReID(DetectionModel):
             if i in self.featmap_idxs:
                 featmap_shapes[i] = x.shape  # (1, C, H, W)
 
-        # Récupère les dimensions des canaux (C) pour chaque couche
+        # Retrieve channel dimensions (C) for each layer
         detect_feat_dims = [featmap_shapes[i][1] for i in self.featmap_idxs]
 
-        self.featmap_projectors = nn.ModuleList(
-            [
-                nn.Conv2d(detect_feat_dims[0], detect_feat_dims[1], kernel_size=1),
-                nn.Conv2d(detect_feat_dims[1], detect_feat_dims[1], kernel_size=1),
-                nn.Conv2d(detect_feat_dims[2], detect_feat_dims[1], kernel_size=1),
-            ]
-        )
+        # Project feature maps to a common dimension
+        # self.featmap_projectors_reid = nn.ModuleList(
+        #     [
+        #         nn.Conv2d(detect_feat_dims[0], detect_feat_dims[1], kernel_size=1),
+        #         nn.Conv2d(detect_feat_dims[1], detect_feat_dims[1], kernel_size=1),
+        #         nn.Conv2d(detect_feat_dims[2], detect_feat_dims[1], kernel_size=1),
+        #     ]
+        # )
+
+        # LOGGER.info(f"Initialized feature map projectors.")
+        # init_weights(self.featmap_projectors_reid)
+
+        self.use_pos_enc = use_pos_enc
+        self.pre_crop_cfg = pre_crop_cfg
+        if use_pos_enc:
+            from ultralytics.models.yolo_manitou.detect_multiCam_reid.utils import build_positional_encoding
+            self.pos_enc = build_positional_encoding(pre_crop_cfg)
+            # numpy to torch tensor
+            for k, v in self.pos_enc.items():
+                if not isinstance(v, torch.Tensor):
+                    self.pos_enc[k] = torch.tensor(v).float().permute(2, 0, 1)[None,]  # [1, C, H, W]
+                    torch.save(self.pos_enc[k], f"/home/shu/Documents/PROTECH/ultralytics/datasets/manitou/lut/{k}.pth")
+                    print(f"Positional encoding {k} saved to: /home/shu/Documents/PROTECH/ultralytics/datasets/manitou/lut/{k}.pth")
+            
+            # Here we hard-code parameters for position embedding
+            
+            # self.pe_fusers_reid = nn.ModuleList(
+            #     [PosEncFuser(pe_dim=self.pe_dim, out_dim=detect_feat_dims[1], mode=self.fusion_mode) for _ in range(3)]
+            # )
+
+            # # init
+            # LOGGER.info(f"Initialized positional encoding fusers with {self.fusion_mode} mode.")
+            # init_weights(self.pe_fusers_reid)
+        self.pe_dim = 128
+        self.fusion_mode = "gated"  # "add", "concat", "gated"
+        self.pe_fusers_reid = nn.ModuleList([
+            ReIDPEBlock(detect_feat_dims[0], detect_feat_dims[1], enable_pe=use_pos_enc, pe_dim=self.pe_dim, fusion_mode=self.fusion_mode, norm="gn"),
+            ReIDPEBlock(detect_feat_dims[1], detect_feat_dims[1], enable_pe=use_pos_enc, pe_dim=self.pe_dim, fusion_mode=self.fusion_mode, norm="gn"),
+            ReIDPEBlock(detect_feat_dims[2], detect_feat_dims[1], enable_pe=use_pos_enc, pe_dim=self.pe_dim, fusion_mode=self.fusion_mode, norm="gn"),
+        ])
+
+        print("="*100)
+        print("Init Positional Encoding Fusers")
+        # print number of parameters in MB
+        num_params = sum(p.numel() for p in self.pe_fusers_reid.parameters()) / 1024**2
+        print(f"Number of parameters: {num_params:.2f} MB")
+        print("="*100)
 
     def load(self, weights, verbose=True):
         """
@@ -1155,15 +1199,15 @@ class DetectionModel_MultiView_ReID(DetectionModel):
         if self.is_train:
             self.criterion.is_train = True
             img = torch.cat([batch["key_frames"]["img"], batch["ref_frames"]["img"]], dim=0)
-            preds, features = self.forward(img, embed=self.featmap_idxs) if preds is None else preds
+            _cam_idx = batch["key_frames"]["cam_idx"] + batch["ref_frames"]["cam_idx"]
+            preds, features = self.forward(img, embed=self.featmap_idxs, cam_idx=_cam_idx) if preds is None else preds
 
             B = batch["key_frames"]["img"].shape[0]
             preds_key = [p[:B] for p in preds]  # liste de 3 tenseurs (4B, 144, H, W)
             preds_ref = [p[B:] for p in preds]
 
-        if not self.is_train:
+        else:
             self.criterion.is_train = False
-
             preds, features = (
                 self.forward(batch["key_frames"]["img"], embed=self.featmap_idxs) if preds is None else preds,
                 features,
@@ -1174,8 +1218,53 @@ class DetectionModel_MultiView_ReID(DetectionModel):
             preds_ref = None
 
         return self.criterion(preds_key, preds_ref, features, batch)
+    
+    def prepare_pos_enc(self, cam_idx: List):
+        """
+        Prepare position encodings for all cameras listed in cam_idx.
+        Args:
+            cam_idx (list): list of camera indices to prepare position encodings for.
+        Returns:
+            list: prepared position encodings of all cameras at different levels.
+        """
+        p3_list, p4_list, p5_list = [], [], []
 
-    def _predict_once(self, x, profile=False, visualize=False, embed=None):
+        if not (hasattr(self, "pos_enc") and self.pos_enc is not None):
+            LOGGER.warning("Position encodings not found, building from files.")
+            # load position encodings
+            from ultralytics.models.yolo_manitou.detect_multiCam_reid.utils import build_positional_encoding
+            self.pos_enc = build_positional_encoding()
+            # numpy to torch tensor
+            for k, v in self.pos_enc.items():
+                if not isinstance(v, torch.Tensor):
+                    self.pos_enc[k] = torch.tensor(v).float().permute(2, 0, 1)[None,]  # [1, C, H, W]
+                    torch.save(self.pos_enc[k], f"/home/shu/Documents/PROTECH/ultralytics/datasets/manitou/lut/{k}.pth")
+                    print(f"Positional encoding {k} saved to: /home/shu/Documents/PROTECH/ultralytics/datasets/manitou/lut/{k}.pth")
+                        
+        for i in cam_idx:            
+            p3_list.append(self.pos_enc[f"cam{i}_pos_enc_p3"][:, :, ...])
+            p4_list.append(self.pos_enc[f"cam{i}_pos_enc_p4"][:, :, ...])
+            p5_list.append(self.pos_enc[f"cam{i}_pos_enc_p5"][:, :, ...])
+
+        # stack to batch
+        p3_pos_enc = torch.cat(p3_list, dim=0)  # [B, C, H, W]
+        p4_pos_enc = torch.cat(p4_list, dim=0)  # [B, C, H, W]
+        p5_pos_enc = torch.cat(p5_list, dim=0)  # [B, C, H, W]
+
+        return [p3_pos_enc, p4_pos_enc, p5_pos_enc]
+
+    def predict(self, x, profile=False, visualize=False, augment=False, embed=None,
+                cam_idx: Optional[List] = None):
+        """
+        Args:
+            pos_enc (list, optional): Position encodings for the input. levels: p3, p4, p5
+        """
+        if augment:
+            LOGGER.warning("Augmentation is not supported for multi-view detection models.")
+            raise NotImplementedError("Augmentation is not supported for multi-view detection models.")
+        return self._predict_once(x, profile=profile, visualize=visualize, embed=embed, cam_idx=cam_idx)
+
+    def _predict_once(self, x, profile=False, visualize=False, embed=None, cam_idx=None):
         y, dt, _embeddings = [], [], []  # outputs
         feature_maps = []
         for m in self.model:
@@ -1186,28 +1275,35 @@ class DetectionModel_MultiView_ReID(DetectionModel):
             x = m(x)  # run
             y.append(x if m.i in self.save else None)  # save output
 
-            if embed and m.i in embed:
+            if isinstance(self.featmap_idxs, list) and m.i in self.featmap_idxs:
                 # print(f"Layer {m.i}: shape={x.shape}")
                 feature_maps.append(x)
 
             if visualize:
                 feature_visualization(x, m.type, m.i, save_dir=visualize)
 
-        if embed is None:
-            return x
-        else:
-            features_flat = self.featmap_flatten(feature_maps)
+        if isinstance(self.featmap_idxs, list):
+            if not self.is_train:
+                # If no cam_idx is provided, use the default one
+                if cam_idx is None:
+                    cam_idx = [1, 2, 3, 4]  # default camera indices for multi-view detection
+            features_flat = self.featmap_flatten(feature_maps, cam_idx)
             return x, features_flat
+        else:
+            return x
 
-    def featmap_flatten(self, feature_maps):
+    def featmap_flatten(self, feature_maps, cam_idx):
         """
-        feature_maps : liste de 3 tenseurs [B, C, H, W]
-        Retourne : [B, total_pixels, 128].
+        feature_maps : list of 3 tensors [B, C, H, W]
+        return  : [B, total_pixels, 128].
         """
         projected = []
-
-        for fmap, proj in zip(feature_maps, self.featmap_projectors):
-            fmap_proj = proj(fmap)  # [B, 128, H, W]
+        pos_enc = self.prepare_pos_enc(cam_idx) if self.use_pos_enc else None
+        for idx, fmap in enumerate(feature_maps):
+            # fmap_proj = self.featmap_projectors_reid[idx](fmap)  # [B, 128, H, W]
+            # if self.use_pos_enc:
+            #     fmap_proj = self.pe_fusers_reid[idx](fmap_proj, pos_enc[idx].to(fmap_proj.device, fmap_proj.dtype))
+            fmap_proj = self.pe_fusers_reid[idx](fmap, pos_enc[idx] if self.use_pos_enc else None, mask=None, use_pe=self.use_pos_enc)
             fmap_flat = fmap_proj.flatten(2).transpose(1, 2)  # [B, H*W, 128]
             projected.append(fmap_flat)
 
@@ -1760,3 +1856,111 @@ def guess_model_task(model):
         "Explicitly define task for your model, i.e. 'task=detect', 'segment', 'classify','pose' or 'obb'."
     )
     return "detect"  # assume detect
+
+
+def init_weights(m: nn.Module):
+    """Initialize weights for the given module."""
+    if isinstance(m, nn.Conv2d):
+        nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+        if m.bias is not None:
+            nn.init.zeros_(m.bias)
+    if isinstance(m, PosEncFuser):
+        # Make gated start close to identity: avoid over-strong PE initially
+        nn.init.zeros_(m.proj.weight)  # Keep P small initially
+        if m.mode == "concat":
+            nn.init.zeros_(m.fuse.weight)
+        if m.mode == "gated":
+            nn.init.zeros_(m.gate.weight)
+            nn.init.constant_(m.gate.bias, -2.0)  # sigmoid(-2)≈0.12, weak injection at start
+            if getattr(m, "use_film", False):
+                # Initialize FiLM as identity: gamma=0, beta=0
+                nn.init.zeros_(m.film.weight)
+                if m.film.bias is not None:
+                    nn.init.zeros_(m.film.bias)
+
+    # ---- New: ReIDPEBlock initialization ----
+    try:
+        ReIDPEBlock
+    except NameError:
+        ReIDPEBlock = None
+
+    if ReIDPEBlock is not None and isinstance(m, ReIDPEBlock):
+        # 1) proj1 / proj2 : Conv -> Kaiming, Norm -> (1,0)
+        if hasattr(m, "proj1") and isinstance(m.proj1, nn.Sequential):
+            for sub in m.proj1.modules():
+                if isinstance(sub, nn.Conv2d):
+                    nn.init.kaiming_normal_(sub.weight, mode="fan_out", nonlinearity="relu")
+                    if sub.bias is not None:
+                        nn.init.zeros_(sub.bias)
+                elif isinstance(sub, (nn.BatchNorm2d, nn.SyncBatchNorm, nn.GroupNorm)):
+                    if hasattr(sub, "weight") and sub.weight is not None:
+                        nn.init.ones_(sub.weight)
+                    if hasattr(sub, "bias") and sub.bias is not None:
+                        nn.init.zeros_(sub.bias)
+
+        if hasattr(m, "proj2") and isinstance(m.proj2, nn.Sequential):
+            for sub in m.proj2.modules():
+                if isinstance(sub, nn.Conv2d):
+                    nn.init.kaiming_normal_(sub.weight, mode="fan_out", nonlinearity="relu")
+                    if sub.bias is not None:
+                        nn.init.zeros_(sub.bias)
+                elif isinstance(sub, (nn.BatchNorm2d, nn.SyncBatchNorm, nn.GroupNorm)):
+                    if hasattr(sub, "weight") and sub.weight is not None:
+                        nn.init.ones_(sub.weight)
+                    if hasattr(sub, "bias") and sub.bias is not None:
+                        nn.init.zeros_(sub.bias)
+
+        # 2) SE branch (if enabled)
+        if getattr(m, "use_se", False):
+            if hasattr(m, "se_fc1") and isinstance(m.se_fc1, nn.Conv2d):
+                nn.init.kaiming_normal_(m.se_fc1.weight, mode="fan_in", nonlinearity="relu")
+                if m.se_fc1.bias is not None:
+                    nn.init.zeros_(m.se_fc1.bias)
+            if hasattr(m, "se_fc2") and isinstance(m.se_fc2, nn.Conv2d):
+                nn.init.zeros_(m.se_fc2.weight)
+                if m.se_fc2.bias is not None:
+                    nn.init.constant_(m.se_fc2.bias, 2.0)  # sigmoid ≈ 0.88; avoid strong suppression at start
+
+        # 3) fuse: if mid_ch == out_dim use 1x1 identity, otherwise Kaiming
+        if hasattr(m, "fuse") and isinstance(m.fuse, nn.Conv2d):
+            in_ch, out_ch = m.fuse.in_channels, m.fuse.out_channels
+            if in_ch == out_ch:  # identity mapping
+                with torch.no_grad():
+                    m.fuse.weight.zero_()
+                    eye = torch.eye(in_ch, dtype=m.fuse.weight.dtype, device=m.fuse.weight.device)
+                    m.fuse.weight.copy_(eye.view(in_ch, in_ch, 1, 1))
+                # bias=False already
+            else:
+                nn.init.kaiming_normal_(m.fuse.weight, mode="fan_out", nonlinearity="relu")
+                # m.fuse.bias is False; ignore
+
+        # 4) Initialize PE branch only if PE is enabled
+        if getattr(m, "enable_pe", False):
+            # pe_proj (Conv + Norm)
+            if hasattr(m, "pe_proj") and isinstance(m.pe_proj, nn.Sequential):
+                for sub in m.pe_proj.modules():
+                    if isinstance(sub, nn.Conv2d):
+                        nn.init.kaiming_normal_(sub.weight, mode="fan_out", nonlinearity="relu")
+                        if sub.bias is not None:
+                            nn.init.zeros_(sub.bias)
+                    elif isinstance(sub, (nn.BatchNorm2d, nn.SyncBatchNorm, nn.GroupNorm)):
+                        if hasattr(sub, "weight") and sub.weight is not None:
+                            nn.init.ones_(sub.weight)
+                        if hasattr(sub, "bias") and sub.bias is not None:
+                            nn.init.zeros_(sub.bias)
+
+            # concat: phi all zeros (initial F0=base)
+            if hasattr(m, "pe_concat_fuse") and isinstance(m.pe_concat_fuse, nn.Conv2d):
+                nn.init.zeros_(m.pe_concat_fuse.weight)
+                if m.pe_concat_fuse.bias is not None:
+                    nn.init.zeros_(m.pe_concat_fuse.bias)
+
+            # gated: Xavier + bias=-2.0 (small gate for stable start)
+            if hasattr(m, "pe_gate") and isinstance(m, "pe_gate", nn.Conv2d):
+                nn.init.xavier_uniform_(m.pe_gate.weight)
+                nn.init.constant_(m.pe_gate.bias, -2.0)
+
+    if isinstance(m, nn.ModuleList):
+        for sub_m in m:
+            init_weights(sub_m)
+

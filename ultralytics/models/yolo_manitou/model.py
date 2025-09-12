@@ -139,11 +139,25 @@ class YOLOManitou_MultiCam(Model):
         if not self.predictor:
             self.predictor = (predictor or self._smart_load("predictor"))(overrides=args, _callbacks=self.callbacks)
             self.predictor.setup_model(model=self.model)
+            # self.setup_model(self.predictor, self.model, device=args["device"])
         else:  # only update args if predictor is already setup
             self.predictor.args = get_cfg(self.predictor.args, args)
             if "project" in args or "name" in args:
                 self.predictor.save_dir = get_save_dir(self.predictor.args)
         return self.predictor(data_cfg=data_cfg)
+
+    def setup_model(self, predictor, model, device):
+        """
+        Initialize YOLO model with given parameters and set it to evaluation mode.
+
+        Args:
+            model (str | Path | torch.nn.Module | None): Model to load or use.
+        """
+        assert isinstance(model, torch.nn.Module), f"Expected model to be a torch.nn.Module, got {type(model)}"
+        predictor.model = model
+        predictor.model.device = device  # update device
+        predictor.model.to(device)  # move model to device
+        predictor.model.eval()
 
     def track(
         self,

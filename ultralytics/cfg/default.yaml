@@ -150,3 +150,9 @@ pre_crop_cfg: # (dict)
 # Radar settings
 use_radar: False # (bool) whether to use radar data
 draw_radar: False # (bool) whether to draw radar data on images
+
+# Positional encoding settings
+use_pos_enc: False # (bool) whether to use positional encoding
+
+# Inference settings
+run_det: True # (bool) whether to run detection model for inference, if False, load detection results from file

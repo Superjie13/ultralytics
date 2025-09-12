@@ -218,7 +218,7 @@ class ManitouValidator_MultiCam_ReID(ManitouValidator):
 
             # Inference
             with dt[1]:
-                preds, features = model(batch["key_frames"]["img"], embed=model.featmap_idxs)
+                preds, features = model(batch["key_frames"]["img"], embed=model.featmap_idxs, cam_idx=batch["key_frames"]["cam_idx"])
             # Loss
             with dt[2]:
                 if self.training:
